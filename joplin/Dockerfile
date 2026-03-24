@@ -1,7 +1,7 @@
 FROM node:20-alpine
 
 # Install Joplin CLI
-RUN npm install -g @joplin/cli
+RUN npm install -g joplin
 
 # Data directory (mounted as volume so notes persist across restarts)
 RUN mkdir -p /root/.config/joplin
