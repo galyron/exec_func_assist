@@ -1,8 +1,8 @@
 {
   "_comment": "Copy to config.json and fill in your values.",
 
-  "discord_channel_id": 0,
-  "discord_user_id": 0,
+  "discord_channel_id": 1485780606985175062,
+  "discord_user_id": 571362545374593054,
   "user_name": "Gabriell",
 
   "joplin_host": "joplin",
@@ -27,8 +27,5 @@
   "opus_session_max_messages": 10,
 
   "weekend_evening_nudge": true,
-  "low_energy_tags": ["[low-energy]", "[couch]", "[easy]"],
-
-  "_excluded_comment": "Run 'docker compose exec bot python -m connectors.calendar' to list all calendar IDs.",
-  "excluded_calendar_ids": []
+  "low_energy_tags": ["[low-energy]", "[couch]", "[easy]"]
 }

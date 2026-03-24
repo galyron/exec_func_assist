@@ -62,6 +62,9 @@ class Config:
     # ── Behaviour ─────────────────────────────────────────────────────────
     weekend_evening_nudge: bool
     low_energy_tags: list[str] = field(default_factory=list)
+    # Google Calendar IDs to exclude from all event fetching.
+    # Run: docker compose exec bot python -m connectors.calendar  to list all IDs.
+    excluded_calendar_ids: list[str] = field(default_factory=list)
 
 
 class ConfigError(Exception):
@@ -130,6 +133,7 @@ def load_config(
             opus_session_max_messages=raw.get("opus_session_max_messages", 10),
             weekend_evening_nudge=raw.get("weekend_evening_nudge", True),
             low_energy_tags=raw.get("low_energy_tags", ["[low-energy]", "[couch]", "[easy]"]),
+            excluded_calendar_ids=raw.get("excluded_calendar_ids", []),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"Invalid config.json: {exc}") from exc
