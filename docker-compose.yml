@@ -1,6 +1,7 @@
 services:
 
   bot:
+    container_name: eva-bot-dev
     build:
       context: .
       dockerfile: Dockerfile
@@ -16,17 +17,18 @@ services:
     #   docker compose run bot --debug --debug-time "2026-03-24 07:25"
 
   joplin:
+    container_name: eva-joplin-dev
     build:
       context: ./joplin
       dockerfile: Dockerfile
     restart: unless-stopped
     env_file: .env           # provides JOPLIN_API_TOKEN
     volumes:
-      - joplin_data:/root/.config/joplin
+      - eva-joplin-data-dev:/root/.config/joplin
     ports:
       # Expose externally only if you need to curl the API from the host.
       # The bot container reaches joplin via Docker DNS (http://joplin:41184).
       - "41184:41184"
 
 volumes:
-  joplin_data:
+  eva-joplin-data-dev:

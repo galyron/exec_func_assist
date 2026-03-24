@@ -19,7 +19,7 @@ ssh "${MBOX_USER}@${MBOX_HOST}" bash <<EOF
   echo "  pulling latest code..."
   git pull --ff-only
   echo "  rebuilding and restarting containers..."
-  docker compose up -d --build
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
   echo "  done."
 EOF
 

@@ -1,0 +1,20 @@
+# Production overrides — used on mbox.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+
+services:
+
+  bot:
+    container_name: eva-bot-prod
+    restart: always
+
+  joplin:
+    container_name: eva-joplin-prod
+    restart: always
+    volumes:
+      - eva-joplin-data-prod:/root/.config/joplin
+    ports:
+      # On mbox, don't expose Joplin externally — bot reaches it via Docker DNS.
+      - "127.0.0.1:41184:41184"
+
+volumes:
+  eva-joplin-data-prod:
