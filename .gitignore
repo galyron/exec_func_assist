@@ -1,0 +1,30 @@
+# Secrets and credentials
+secrets/
+.env
+credentials/
+google_token.json
+
+# Runtime state
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Tests
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# macOS
+.DS_Store

@@ -1,0 +1,31 @@
+{
+  "_comment": "Copy to config.json and fill in your values.",
+
+  "discord_channel_id": 0,
+  "discord_user_id": 0,
+  "user_name": "Gabriell",
+
+  "joplin_host": "joplin",
+  "joplin_api_port": 41184,
+
+  "timezone": "Europe/Berlin",
+
+  "morning_routine": "07:30",
+  "morning_routine_retry_window_min": 90,
+  "work_start": "09:15",
+  "work_end": "16:00",
+  "midday_checkin": "13:00",
+  "evening_start": "20:30",
+  "end_of_day_review": "22:30",
+  "bedtime": "23:00",
+
+  "nudge_cooldown_min": 45,
+  "min_gap_for_nudge_min": 30,
+  "followup_default_min": 20,
+
+  "monthly_cost_limit_usd": 10.0,
+  "opus_session_max_messages": 10,
+
+  "weekend_evening_nudge": true,
+  "low_energy_tags": ["[low-energy]", "[couch]", "[easy]"]
+}
