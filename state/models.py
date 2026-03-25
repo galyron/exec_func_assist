@@ -22,6 +22,7 @@ class DailyState(TypedDict):
     opus_session_messages: int
     last_suggestion: Optional[str]      # text of last suggestion sent
     last_suggestion_ts: Optional[str]   # ISO datetime
+    last_suggested_task_id: Optional[str]  # Joplin task id of last suggested task (for auto-done)
 
 
 class PreviousDailyState(TypedDict):
@@ -82,6 +83,7 @@ def default_daily_state(date_str: str) -> DailyState:
         opus_session_messages=0,
         last_suggestion=None,
         last_suggestion_ts=None,
+        last_suggested_task_id=None,
     )
 
 

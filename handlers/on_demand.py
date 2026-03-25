@@ -179,6 +179,22 @@ class OnDemandHandler(BaseHandler):
 
     async def _handle_finished(self, text: str, send_fn: SendFn) -> None:
         self._followup.cancel()
+
+        # Auto-complete last suggested Joplin task if we have one recorded
+        daily = await self._state.get_daily()
+        task_id = daily.get("last_suggested_task_id")
+        if task_id and self._joplin is not None:
+            tasks = await self._joplin.get_tasks()
+            task = next((t for t in tasks if t.id == task_id), None)
+            if task:
+                await self._joplin.mark_done(task)
+                await self._state.update_daily(last_suggested_task_id=None)
+                msg = f"Done. Marked **{task.title}** as done in Joplin. What's next, {self._config.user_name}?"
+                await send_fn(msg)
+                await self._log_user(text)
+                await self._log_bot(msg)
+                return
+
         msg = f"Done. What's next, {self._config.user_name}?"
         await send_fn(msg)
         await self._log_user(text)
