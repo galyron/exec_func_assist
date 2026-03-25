@@ -202,7 +202,7 @@ Full rationale in `DECISIONS.md`. Do not re-open without flagging explicitly.
 
 **Nudge cooldown:** 45 min minimum between unsolicited messages. Calendar gap must be ≥ 30 min to trigger a nudge.
 
-**Tone (first-class feature):** never guilt/shame/pressure; always offer an easy exit; name the first physical action; default to 15-min commitments.
+**Tone (first-class feature):** hard accountability — name the cost of delay directly; no soft exits by default; name the first concrete physical action; make the loss of time and momentum feel real. Work mode = maximum pressure. Recovery mode = still push, couch-compatible tasks only. The old "never guilt/shame" constraint has been deliberately removed at the user's request.
 
 ---
 
