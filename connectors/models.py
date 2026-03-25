@@ -21,6 +21,7 @@ class Task:
     checklist item within a regular note body.
     """
     id: str                 # note ID for todos; "noteId:position" for checklist items
+    note_id: str            # always the Joplin note ID (parent note for checklist items)
     title: str              # task text
     notebook: str           # parent folder name (used as project/area label)
     notebook_id: str
@@ -28,6 +29,8 @@ class Task:
     is_high_priority: bool  # True if "[high]" in tags
     position: int           # order within notebook/note (lower = earlier/higher priority)
     updated_time: int       # Joplin unix ms timestamp
+    is_checklist_item: bool = False          # True if from a note checklist (not a todo note)
+    checklist_item_text: Optional[str] = None  # raw text for checklist matching on write-back
 
 
 @dataclass

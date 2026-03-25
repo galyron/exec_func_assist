@@ -184,7 +184,7 @@ async def test_assemble_text_contains_tasks_section(assembler):
 
 async def test_assemble_task_appears_in_text(assembler):
     tasks = [Task(
-        id="t1", title="Fix critical bug", notebook="Work", notebook_id="nb1",
+        id="t1", note_id="t1", title="Fix critical bug", notebook="Work", notebook_id="nb1",
         tags=["[high]"], is_high_priority=True, position=0, updated_time=0,
     )]
     ctx = await assembler.assemble(tasks=tasks, events=[], interactions=[])
