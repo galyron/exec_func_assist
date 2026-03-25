@@ -129,6 +129,7 @@ class EFABot(discord.Client):
             return
 
         if message.author.id != self.config.discord_user_id:
+            await self._alert_unauthorized(message)
             return
 
         is_dm = isinstance(message.channel, discord.DMChannel)
@@ -159,6 +160,30 @@ class EFABot(discord.Client):
         await self.on_demand_handler.handle(text, message.reply)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+
+    async def _alert_unauthorized(self, message: discord.Message) -> None:
+        """Log and optionally notify about a message from an unexpected user."""
+        source = (
+            "DM" if isinstance(message.channel, discord.DMChannel)
+            else f"#{message.channel}"
+        )
+        log.warning(
+            "Unauthorized message ignored | user=%s (id=%s) | source=%s | text=%r",
+            message.author, message.author.id, source, message.content[:200],
+        )
+        if not self.config.security_alerts_channel_id:
+            return
+        alert_ch = self.get_channel(self.config.security_alerts_channel_id)
+        if alert_ch is None:
+            log.warning("security_alerts_channel_id configured but channel not found.")
+            return
+        preview = message.content[:200] + ("…" if len(message.content) > 200 else "")
+        await alert_ch.send(
+            f"⚠️ **Unauthorized message**\n"
+            f"**User:** {message.author} (ID `{message.author.id}`)\n"
+            f"**Source:** {source}\n"
+            f"**Content:** {preview or '*(empty)*'}"
+        )
 
     def _get_channel_send(self):
         """Return channel.send or None if the channel isn't available."""

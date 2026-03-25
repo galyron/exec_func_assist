@@ -27,6 +27,7 @@ class Config:
     # ── Discord ───────────────────────────────────────────────────────────
     discord_channel_id: int
     discord_user_id: int  # used for @mention in proactive messages
+    security_alerts_channel_id: int | None  # optional; unauthorized-message alerts
 
     # ── User ──────────────────────────────────────────────────────────────
     user_name: str
@@ -114,6 +115,7 @@ def load_config(
             joplin_api_token=joplin_api_token,
             discord_channel_id=_require_int(raw, "discord_channel_id"),
             discord_user_id=_require_int(raw, "discord_user_id"),
+            security_alerts_channel_id=raw.get("security_alerts_channel_id") or None,
             user_name=_require_str(raw, "user_name"),
             joplin_host=raw.get("joplin_host", "joplin"),
             joplin_api_port=raw.get("joplin_api_port", 41184),
