@@ -131,30 +131,44 @@ class Scheduler:
     async def _fire_morning(self) -> None:
         if send_fn := self._get_send_fn():
             await self._morning.fire(send_fn)
+        else:
+            log.warning("morning_routine fired but Discord channel unavailable — skipped.")
 
     async def _fire_morning_retry(self) -> None:
         if send_fn := self._get_send_fn():
             await self._morning.fire_retry(send_fn)
+        else:
+            log.warning("morning_retry fired but Discord channel unavailable — skipped.")
 
     async def _fire_kickoff(self) -> None:
         if send_fn := self._get_send_fn():
             await self._kickoff.fire(send_fn)
+        else:
+            log.warning("day_kickoff fired but Discord channel unavailable — skipped.")
 
     async def _fire_midday(self) -> None:
         if send_fn := self._get_send_fn():
             await self._checkin.fire(CheckinType.MIDDAY, send_fn)
+        else:
+            log.warning("midday_checkin fired but Discord channel unavailable — skipped.")
 
     async def _fire_evening(self) -> None:
         if send_fn := self._get_send_fn():
             await self._checkin.fire(CheckinType.EVENING, send_fn)
+        else:
+            log.warning("evening_checkin fired but Discord channel unavailable — skipped.")
 
     async def _fire_end_of_day(self) -> None:
         if send_fn := self._get_send_fn():
             await self._bedtime.fire_end_of_day(send_fn)
+        else:
+            log.warning("end_of_day fired but Discord channel unavailable — skipped.")
 
     async def _fire_bedtime(self) -> None:
         if send_fn := self._get_send_fn():
             await self._bedtime.fire_bedtime(send_fn)
+        else:
+            log.warning("bedtime fired but Discord channel unavailable — skipped.")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
