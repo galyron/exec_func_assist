@@ -77,11 +77,20 @@ class JoplinConnector:
         notebook: Only tasks from this notebook name are returned (default "00_TODO").
     """
 
-    def __init__(self, host: str, port: int, token: str, notebook: str = "00_TODO") -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        token: str,
+        notebook: str = "00_TODO",
+        inbox_note: str = "99 - added by eva",
+    ) -> None:
         self._base = f"http://{host}:{port}"
         self._token = token
         self._notebook = notebook
+        self._inbox_note = inbox_note
         self._todo_folder_id: Optional[str] = None  # cached after first get_tasks()
+        self._inbox_note_id: Optional[str] = None   # cached after first create_task()
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -170,19 +179,31 @@ class JoplinConnector:
             return False
 
     async def create_task(self, title: str) -> Optional[str]:
-        """Create a new todo note in the configured notebook. Returns the new note id or None."""
-        folder_id = await self._ensure_folder_id()
-        if folder_id is None:
-            log.warning("create_task: cannot determine todo folder id")
-            return None
+        """Append a checklist item to the inbox note. Returns the note id or None.
+
+        The target note is configured via `inbox_note` (default "99 - added by eva")
+        inside the `notebook` folder. The item is appended as `- [ ] <title>`.
+        Returns None on any failure, which triggers the local-queue fallback in the handler.
+        """
         try:
             async with aiohttp.ClientSession() as session:
-                data = await self._post(session, "/notes", {
-                    "title": title,
-                    "is_todo": 1,
-                    "parent_id": folder_id,
-                })
-                return data.get("id")
+                folder_id = await self._resolve_folder_id(session)
+                if folder_id is None:
+                    log.warning("create_task: notebook %r not found", self._notebook)
+                    return None
+                note_id = await self._resolve_inbox_note_id(session, folder_id)
+                if note_id is None:
+                    log.warning(
+                        "create_task: inbox note %r not found in %r",
+                        self._inbox_note, self._notebook,
+                    )
+                    return None
+                note_data = await self._get(session, f"/notes/{note_id}", fields="id,body")
+                body = note_data.get("body") or ""
+                sep = "\n" if body and not body.endswith("\n") else ""
+                new_body = body + sep + f"- [ ] {title}\n"
+                await self._put(session, f"/notes/{note_id}", {"body": new_body})
+                return note_id
         except Exception as exc:
             log.warning("Joplin create_task failed for %r: %s", title, exc)
             return None
@@ -267,18 +288,39 @@ class JoplinConnector:
         await self._put(session, f"/notes/{task.note_id}", {"body": new_body})
         return True
 
+    async def _resolve_folder_id(self, session: aiohttp.ClientSession) -> Optional[str]:
+        """Return the todo folder ID (cached). Fetches folders if needed."""
+        if self._todo_folder_id:
+            return self._todo_folder_id
+        folders = await self._get_all(session, "/folders", fields=_FOLDER_FIELDS)
+        self._todo_folder_id = next(
+            (f["id"] for f in folders if f["title"] == self._notebook), None
+        )
+        return self._todo_folder_id
+
+    async def _resolve_inbox_note_id(
+        self, session: aiohttp.ClientSession, folder_id: str
+    ) -> Optional[str]:
+        """Return the inbox note ID within folder_id (cached). Fetches notes if needed."""
+        if self._inbox_note_id:
+            return self._inbox_note_id
+        notes = await self._get_all(session, "/notes", fields="id,title,parent_id")
+        self._inbox_note_id = next(
+            (
+                n["id"] for n in notes
+                if n.get("parent_id") == folder_id and n.get("title") == self._inbox_note
+            ),
+            None,
+        )
+        return self._inbox_note_id
+
     async def _ensure_folder_id(self) -> Optional[str]:
         """Return the cached todo folder id, fetching folders if not yet cached."""
         if self._todo_folder_id:
             return self._todo_folder_id
         try:
             async with aiohttp.ClientSession() as session:
-                folders = await self._get_all(session, "/folders", fields=_FOLDER_FIELDS)
-            folder_id = next(
-                (f["id"] for f in folders if f["title"] == self._notebook), None
-            )
-            self._todo_folder_id = folder_id
-            return folder_id
+                return await self._resolve_folder_id(session)
         except Exception as exc:
             log.warning("_ensure_folder_id failed: %s", exc)
             return None

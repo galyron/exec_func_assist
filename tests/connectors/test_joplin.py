@@ -347,32 +347,67 @@ async def test_mark_done_checklist_item_not_found_returns_false(connector):
 
 # ── create_task ───────────────────────────────────────────────────────────────
 
-async def test_create_task_posts_to_notes(connector):
-    connector._todo_folder_id = _FOLDER_ID
-    with patch.object(connector, "_post", new=AsyncMock(return_value={"id": "new-note-id"})) as mock_post:
-        result = await connector.create_task("Write tests")
-    assert result == "new-note-id"
-    post_data = mock_post.call_args[0][2]
-    assert post_data["title"] == "Write tests"
-    assert post_data["is_todo"] == 1
-    assert post_data["parent_id"] == _FOLDER_ID
+_INBOX_NOTE_ID = "n-inbox"
+_INBOX_NOTE_TITLE = "99 - added by eva"
 
 
-async def test_create_task_returns_none_on_error(connector):
-    connector._todo_folder_id = _FOLDER_ID
-    with patch.object(connector, "_post", new=AsyncMock(side_effect=Exception("timeout"))):
-        result = await connector.create_task("Write tests")
+@pytest.fixture
+def connector_with_inbox():
+    """Connector with folder + inbox note IDs pre-cached."""
+    c = JoplinConnector(
+        host="localhost", port=41184, token="test-token",
+        notebook=_NOTEBOOK, inbox_note=_INBOX_NOTE_TITLE,
+    )
+    c._todo_folder_id = _FOLDER_ID
+    c._inbox_note_id = _INBOX_NOTE_ID
+    return c
+
+
+async def test_create_task_appends_checklist_item(connector_with_inbox):
+    existing_body = "- [ ] Old task\n"
+    with patch.object(connector_with_inbox, "_get", new=AsyncMock(return_value={"id": _INBOX_NOTE_ID, "body": existing_body})), \
+         patch.object(connector_with_inbox, "_put", new=AsyncMock(return_value={})) as mock_put:
+        result = await connector_with_inbox.create_task("Write tests")
+    assert result == _INBOX_NOTE_ID
+    new_body = mock_put.call_args[0][2]["body"]
+    assert "- [ ] Write tests" in new_body
+    assert "- [ ] Old task" in new_body  # existing item preserved
+
+
+async def test_create_task_appends_to_empty_note(connector_with_inbox):
+    with patch.object(connector_with_inbox, "_get", new=AsyncMock(return_value={"id": _INBOX_NOTE_ID, "body": ""})), \
+         patch.object(connector_with_inbox, "_put", new=AsyncMock(return_value={})) as mock_put:
+        await connector_with_inbox.create_task("New task")
+    new_body = mock_put.call_args[0][2]["body"]
+    assert new_body == "- [ ] New task\n"
+
+
+async def test_create_task_returns_none_on_error(connector_with_inbox):
+    with patch.object(connector_with_inbox, "_get", new=AsyncMock(side_effect=Exception("timeout"))):
+        result = await connector_with_inbox.create_task("Write tests")
     assert result is None
 
 
-async def test_create_task_fetches_folder_if_not_cached(connector):
-    assert connector._todo_folder_id is None
-    folders = [{"id": _FOLDER_ID, "title": _NOTEBOOK}]
-    with patch.object(connector, "_get_all", new=AsyncMock(return_value=folders)), \
-         patch.object(connector, "_post", new=AsyncMock(return_value={"id": "x"})):
+async def test_create_task_returns_none_when_inbox_note_missing(connector):
+    connector._todo_folder_id = _FOLDER_ID
+    # Inbox note not found in note list
+    notes = [{"id": "other-id", "title": "Not the inbox", "parent_id": _FOLDER_ID}]
+    with patch.object(connector, "_get_all", new=AsyncMock(return_value=notes)):
         result = await connector.create_task("New task")
-    assert result == "x"
+    assert result is None
+
+
+async def test_create_task_resolves_folder_and_inbox_if_not_cached(connector):
+    folders = [{"id": _FOLDER_ID, "title": _NOTEBOOK}]
+    notes = [{"id": _INBOX_NOTE_ID, "title": _INBOX_NOTE_TITLE, "parent_id": _FOLDER_ID}]
+    connector._inbox_note = _INBOX_NOTE_TITLE
+    with patch.object(connector, "_get_all", new=AsyncMock(side_effect=[folders, notes])), \
+         patch.object(connector, "_get", new=AsyncMock(return_value={"id": _INBOX_NOTE_ID, "body": ""})), \
+         patch.object(connector, "_put", new=AsyncMock(return_value={})):
+        result = await connector.create_task("New task")
+    assert result == _INBOX_NOTE_ID
     assert connector._todo_folder_id == _FOLDER_ID
+    assert connector._inbox_note_id == _INBOX_NOTE_ID
 
 
 # ── get_tasks: new Task fields ────────────────────────────────────────────────

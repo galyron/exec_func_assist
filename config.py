@@ -36,6 +36,7 @@ class Config:
     joplin_host: str
     joplin_api_port: int
     todo_notebook: str  # only tasks from this Joplin notebook are used
+    todo_inbox_note: str  # note title inside todo_notebook where `add:` tasks are appended
 
     # ── Timezone ──────────────────────────────────────────────────────────
     timezone: str
@@ -121,6 +122,7 @@ def load_config(
             joplin_host=raw.get("joplin_host", "joplin"),
             joplin_api_port=raw.get("joplin_api_port", 41184),
             todo_notebook=raw.get("todo_notebook", "00_TODO"),
+            todo_inbox_note=raw.get("todo_inbox_note", "99 - added by eva"),
             timezone=raw.get("timezone", "Europe/Berlin"),
             morning_routine=raw.get("morning_routine", "07:30"),
             morning_routine_retry_window_min=raw.get("morning_routine_retry_window_min", 90),

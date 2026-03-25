@@ -202,6 +202,7 @@ def _build_bot(args: argparse.Namespace, config, clock: Clock) -> EFABot:
         port=config.joplin_api_port,
         token=config.joplin_api_token,
         notebook=config.todo_notebook,
+        inbox_note=config.todo_inbox_note,
     )
     calendar = CalendarConnector(
         token_path=_TOKEN_PATH,
