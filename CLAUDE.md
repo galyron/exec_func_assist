@@ -132,7 +132,7 @@ Every LLM call: fetch tasks + events + recent interactions → assemble context 
 
 **`llm/client.py` (C6)** — `LLMClient.send()` selects Sonnet/Opus based on session state, prepends the context string to the user message, tracks monthly spend in `state.json`, enforces `monthly_cost_limit_usd`. Opus auto-reverts after `opus_session_max_messages`.
 
-**`llm/prompts.py`** — System prompts keyed by `Mode` enum. Tone constraints are encoded here; this is a first-class feature, not an afterthought.
+**`llm/prompts.py`** — System prompts keyed by `Mode` enum. Tone is a first-class feature. **Hardcoded trigger strings inside each handler (`fire()`, `fire_end_of_day()`, etc.) are equally load-bearing** — they are the user-turn instruction that shapes the LLM output. If you change tone, update both `prompts.py` AND the trigger strings in the relevant handler. The end-of-day trigger includes `clock.now()` date+time explicitly to prevent day-of-week hallucination.
 
 **`utils/clock.py` (C16)** — `Clock` abstraction. `RealClock` for production; `DebugClock` for time-simulation (configurable multiplier). **Nothing calls `datetime.now()` directly** — always use `clock.now()`.
 
@@ -192,9 +192,9 @@ Full rationale in `DECISIONS.md`. Do not re-open without flagging explicitly.
 ## Bot Behaviour
 
 **Weekday modes:**
-1. **Morning** (07:30) — structured interview, one question at a time, max 5 follow-ups
-2. **Work** (09:15–16:00) — assertive, concrete first actions, task triage
-3. **Recovery** (20:30+) — low-pressure, couch-compatible tasks, 15-min max commitments
+1. **Morning** (07:30) — structured interview, one question at a time; retry nudge fires N minutes later if no response
+2. **Work** (09:15–16:00) — maximum pressure; name cost of delay; no soft exits
+3. **Recovery** (20:30+) — couch-compatible tasks only ([couch]/[low-energy]/[easy]); still pushes, 15-min max commitment
 
 **Weekends:** silent unless user initiates. Evening nudge configurable via `weekend_evening_nudge`.
 
