@@ -33,7 +33,7 @@ A self-hosted Discord bot that acts as an executive function prosthetic: proacti
 
 **Deployment flow:** `git push` on MacBook → SSH to mbox → `git pull && docker compose up -d --build` (or `./deploy.sh`).
 
-**Google OAuth2 setup:** Run `setup_calendar.py` on MacBook (has browser), copy resulting `credentials/google_token.json` to mbox before first deploy.
+**Google OAuth2 setup:** Run `setup_calendar.py` on MacBook (has browser), copy resulting `secrets/google_token.json` to mbox before first deploy.
 
 **Calendar consolidation:** Google Calendar with ICS subscription URLs from each external provider (Outlook, WorkMail). No separate sync service. See pre-implementation checklist for setup steps. *(Keeper.sh was evaluated and ruled out — it strips event names.)*
 
@@ -82,7 +82,7 @@ Polls Joplin REST API, returns a structured task list with metadata: notebook na
 
 ### C4 — Calendar Connector
 Fetches today's Google Calendar events via API v3; computes free/busy windows for the day. Returns provider-agnostic types (`CalendarEvent`, `FreeWindow`) so that future direct ICS-feed sources can be added without touching anything above this layer.
-- **Inputs:** `credentials/google_token.json`, target date
+- **Inputs:** `secrets/google_token.json`, target date
 - **Output:** `list[CalendarEvent]`, `list[FreeWindow]`
 - **Dependencies:** C1
 - **Future extension point:** additional source adapters (direct ICS feeds per provider) feed the same output types; C5 and above are unaffected
@@ -179,9 +179,9 @@ Active hours = `morning_routine` time through `bedtime` time. Overnight = everyt
 - **Dependencies:** C1, C3, C4, all handlers
 
 ### C15 — Setup Script
-One-time `setup_calendar.py`: runs OAuth2 browser consent flow on MacBook, writes `credentials/google_token.json`. Copy token to mbox before first deploy.
-- **Inputs:** `credentials/google_client_secret.json`
-- **Output:** `credentials/google_token.json`
+One-time `setup_calendar.py`: runs OAuth2 browser consent flow on MacBook, writes `secrets/google_token.json`. Copy token to mbox before first deploy.
+- **Inputs:** `secrets/google_client_secret.json`
+- **Output:** `secrets/google_token.json`
 - **Dependencies:** C1
 
 ### C16 — Clock Abstraction
@@ -227,7 +227,7 @@ Each phase produces something that runs and can be verified.
 
 Joplin connector talks to the `joplin` container (already running from Phase 1-A). Calendar connector verified after running `setup_calendar.py` on MacBook. Both runnable as standalone scripts inside the bot container.
 
-**Acceptance criterion:** `docker compose exec bot python -m connectors.joplin` prints a structured task list from the Joplin container. `python setup_calendar.py` on MacBook completes OAuth2 and writes `credentials/google_token.json`. `docker compose exec bot python -m connectors.calendar` prints today's events and free windows.
+**Acceptance criterion:** `docker compose exec bot python -m connectors.joplin` prints a structured task list from the Joplin container. `python setup_calendar.py` on MacBook completes OAuth2 and writes `secrets/google_token.json`. `docker compose exec bot python -m connectors.calendar` prints today's events and free windows.
 
 ---
 
@@ -276,6 +276,6 @@ All on-demand intents, weekend suppression, "off today" flag, follow-up scheduli
 
 4. **Error handling:** All external calls (Joplin, Calendar, Claude API) have explicit try/except with logging. On connector failure, the bot degrades gracefully: missing Joplin data → skip task context; missing Calendar data → skip calendar context; LLM failure → send a safe fallback message rather than silently failing.
 
-5. **Secrets and gitignore:** `.env`, `credentials/google_token.json`, `credentials/google_client_secret.json`, and `data/` are gitignored before the first commit. `config.example.json` and `.env.example` are committed as templates.
+5. **Secrets and gitignore:** `.env`, `secrets/google_token.json`, `secrets/google_client_secret.json`, and `data/` are gitignored before the first commit. `config.example.json` and `.env.example` are committed as templates.
 
 6. **Commits:** One commit per completed component or meaningful checkpoint. Never commit a component whose tests are failing.

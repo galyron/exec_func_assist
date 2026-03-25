@@ -25,7 +25,7 @@ from connectors.models import CalendarEvent, FreeWindow
 log = logging.getLogger(__name__)
 
 _SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
-_DEFAULT_TOKEN_PATH = Path("credentials/google_token.json")
+_DEFAULT_TOKEN_PATH = Path("secrets/google_token.json")
 
 
 class CalendarConnector:

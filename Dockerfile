@@ -6,10 +6,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy source (data/ and credentials/ are mounted as volumes, not baked in)
+# Copy source (data/ and secrets/ are mounted as volumes, not baked in)
 COPY . .
 
-# Ensure data and credentials dirs exist inside the image as mount points
-RUN mkdir -p /app/data /app/credentials
+# Ensure data and secrets dirs exist inside the image as mount points
+RUN mkdir -p /app/data /app/secrets
 
 CMD ["python", "bot.py"]

@@ -2,13 +2,13 @@
 """C15 — One-time Google Calendar OAuth2 setup.
 
 Run this on your MacBook (a browser is required for the consent flow).
-Copy the resulting credentials/google_token.json to mbox before the
+Copy the resulting secrets/google_token.json to mbox before the
 first production deploy.
 
 Prerequisites:
   1. Download OAuth credentials from Google Cloud Console:
        APIs & Services → Credentials → your OAuth 2.0 Client ID → Download JSON
-  2. Save the file as: credentials/google_client_secret.json
+  2. Save the file as: secrets/google_client_secret.json
 
 Usage:
     python setup_calendar.py
@@ -20,8 +20,8 @@ import json
 import sys
 from pathlib import Path
 
-CLIENT_SECRET_PATH = Path("credentials/google_client_secret.json")
-TOKEN_PATH = Path("credentials/google_token.json")
+CLIENT_SECRET_PATH = Path("secrets/google_client_secret.json")
+TOKEN_PATH = Path("secrets/google_token.json")
 SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
 
 
@@ -64,7 +64,7 @@ def main() -> None:
     print()
     print("Next steps:")
     print("  • Local dev:  docker compose exec bot python -m connectors.calendar")
-    print("  • Production: copy credentials/google_token.json to mbox before deploying")
+    print("  • Production: copy secrets/google_token.json to mbox before deploying")
 
 
 if __name__ == "__main__":

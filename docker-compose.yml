@@ -11,7 +11,7 @@ services:
     env_file: .env
     volumes:
       - ./data:/app/data
-      - ./credentials:/app/credentials
+      - ./secrets:/app/secrets
       - ./config.json:/app/config.json:ro
     # Pass --debug flags at runtime:
     #   docker compose run bot --debug --debug-time "2026-03-24 07:25"

@@ -32,7 +32,7 @@ This is a **greenfield project**. No implementation exists yet. Follow `/kickoff
 
 **Deploy to mbox:** `./deploy.sh` → SSH → `git pull && docker compose up -d --build`.
 
-**Google OAuth2:** Run `setup_calendar.py` on MacBook (has browser), copy `credentials/google_token.json` to mbox before first prod deploy.
+**Google OAuth2:** Run `setup_calendar.py` on MacBook (has browser), copy `secrets/google_token.json` to mbox before first prod deploy.
 
 ---
 

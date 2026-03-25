@@ -1,7 +1,6 @@
 # Secrets and credentials
 secrets/
 .env
-credentials/
 google_token.json
 
 # Runtime state
