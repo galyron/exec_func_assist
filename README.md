@@ -134,8 +134,8 @@ On mbox, clone the repo and set up config:
 
 ```sh
 ssh gabriell@192.168.178.24
-git clone https://github.com/galyron/exec_func_assist.git ~/exec_func_assist
-cd ~/exec_func_assist
+git clone https://github.com/galyron/exec_func_assist.git ~/services/exec_func_assist
+cd ~/services/exec_func_assist
 cp .env.example .env            # fill in with production values
 cp config.example.json config.json
 mkdir -p secrets
@@ -145,14 +145,14 @@ exit
 From MacBook, copy the Google Calendar token:
 
 ```sh
-scp secrets/google_token.json gabriell@192.168.178.24:~/exec_func_assist/secrets/
+scp secrets/google_token.json gabriell@192.168.178.24:~/services/exec_func_assist/secrets/
 ```
 
 Then start the stack on mbox:
 
 ```sh
 ssh gabriell@192.168.178.24
-cd ~/exec_func_assist
+cd ~/services/exec_func_assist
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```
 
