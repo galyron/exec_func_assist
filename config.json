@@ -8,6 +8,7 @@
 
   "joplin_host": "joplin",
   "joplin_api_port": 41184,
+  "todo_notebook": "00_TODO",
 
   "timezone": "Europe/Berlin",
 

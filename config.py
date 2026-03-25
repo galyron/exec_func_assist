@@ -35,6 +35,7 @@ class Config:
     # ── Joplin ────────────────────────────────────────────────────────────
     joplin_host: str
     joplin_api_port: int
+    todo_notebook: str  # only tasks from this Joplin notebook are used
 
     # ── Timezone ──────────────────────────────────────────────────────────
     timezone: str
@@ -119,6 +120,7 @@ def load_config(
             user_name=_require_str(raw, "user_name"),
             joplin_host=raw.get("joplin_host", "joplin"),
             joplin_api_port=raw.get("joplin_api_port", 41184),
+            todo_notebook=raw.get("todo_notebook", "00_TODO"),
             timezone=raw.get("timezone", "Europe/Berlin"),
             morning_routine=raw.get("morning_routine", "07:30"),
             morning_routine_retry_window_min=raw.get("morning_routine_retry_window_min", 90),

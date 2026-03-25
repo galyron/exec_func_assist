@@ -175,6 +175,25 @@ docker logs eva-joplin-prod -f
 
 ---
 
+## Joplin task tags
+
+The bot reads tasks exclusively from the `00_TODO` notebook (configurable via `todo_notebook` in `config.json`).
+
+Tags are detected automatically from note titles. You don't need special syntax — write whatever feels natural. All of the following are recognised:
+
+| Tag | What the bot sees | Write any of these in the note title |
+|-----|-------------------|--------------------------------------|
+| `[today]` | Must be done today — shown first in nudges | `today` · `by EOD` · `by EOB` · `do it today` · `must do today` · `urgent/today` |
+| `[urgent]` | Drop everything | `urgent` · `asap` |
+| `[this-week]` | Sometime this week | `this week` · `by EOW` · `by end of week` |
+| `[high]` | Important, not time-bound | `important` · `high priority` · `[high]` |
+| `[low-energy]` | Can do when tired or on the couch | `low energy` · `couch` · `[low-energy]` · `[couch]` |
+| `[easy]` | Quick win, minimal effort | `easy` · `quick win` · `quick` · `[easy]` |
+
+Multiple tags on one task are fine: *"Fix login bug urgent/today"* → `[today]` + `[urgent]`.
+
+---
+
 ## Bot behaviour reference
 
 | Time | Mode | Behaviour |
