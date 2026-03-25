@@ -128,6 +128,9 @@ class EFABot(discord.Client):
         if message.author == self.user:
             return
 
+        if message.author.id != self.config.discord_user_id:
+            return
+
         is_dm = isinstance(message.channel, discord.DMChannel)
         is_configured_channel = (
             isinstance(message.channel, discord.TextChannel)
