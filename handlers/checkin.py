@@ -65,17 +65,19 @@ class CheckinHandler(BaseHandler):
 
         if checkin_type == CheckinType.MIDDAY:
             trigger = (
-                f"It is {now_str}. Generate a brief midday check-in for {self._config.user_name}. "
-                "Acknowledge morning progress, check energy, and suggest what to focus on next. "
-                "Include an easy exit option. Keep it under 100 words."
+                f"It is {now_str}. Midday check-in for {self._config.user_name}. "
+                "State what should be happening right now based on the task list. "
+                "Name the single most important thing to execute before end of work day. "
+                "Name the first physical action. No soft exits. Under 80 words."
             )
         else:
             trigger = (
-                f"It is {now_str}. Generate the evening check-in for {self._config.user_name}. "
-                "This is Recovery Mode. Prioritise couch-compatible tasks tagged [couch], "
-                "[low-energy], or [easy]. Suggest 1–2 options as 15-minute commitments. "
-                "Always include 'or just rest — completely valid' as an option. "
-                "Keep it under 100 words."
+                f"It is {now_str}. Evening check-in for {self._config.user_name}. "
+                "Energy is lower — that is real. It does not mean the day is over. "
+                "Suggest 1–2 couch-compatible tasks (tagged [couch], [low-energy], or [easy]). "
+                "Name the first physical action for each. 15-minute commitment max. "
+                "Make clear what it costs to skip even this: tomorrow starts heavier. "
+                "Under 100 words. No empty comfort."
             )
 
         response = await self._llm.send(ctx, trigger)
@@ -96,7 +98,7 @@ class CheckinHandler(BaseHandler):
             await self._handle_skip(send_fn)
 
     async def _handle_good(self, send_fn: SendFn) -> None:
-        msg = f"Nice! Keep it up, {self._config.user_name}. 👍"
+        msg = f"Good. Keep moving, {self._config.user_name}."
         await send_fn(msg)
         await self._log_bot(msg)
 
@@ -104,15 +106,16 @@ class CheckinHandler(BaseHandler):
         ctx = await self._build_context()
         trigger = (
             f"{self._config.user_name} says they're struggling. "
-            "Ask what specifically is in the way, then suggest the smallest possible next step. "
-            "Be warm, not pushy."
+            "Name what is specifically blocking them. "
+            "Give the single smallest physical action that breaks the freeze. "
+            "Direct and brief — no comfort, no padding."
         )
         response = await self._llm.send(ctx, trigger)
         await send_fn(response)
         await self._log_bot(response)
 
     async def _handle_skip(self, send_fn: SendFn) -> None:
-        msg = "No problem — come back when you're ready."
+        msg = f"Skipped. That task is still waiting, {self._config.user_name}."
         await send_fn(msg)
         await self._log_bot(msg)
 

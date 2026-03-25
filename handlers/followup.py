@@ -101,8 +101,7 @@ class FollowupHandler(BaseHandler):
             return
 
         msg = (
-            f"Hey {self._config.user_name} — checking in on that last suggestion. "
-            "How did it go?"
+            f"{self._config.user_name} — 20 minutes. Did you do it or not?"
         )
         view = _FollowupView(handler=self)
         await send_fn(msg, view=view)
@@ -113,20 +112,20 @@ class FollowupHandler(BaseHandler):
     async def handle_done(self, send_fn: SendFn) -> None:
         """User completed the suggested task."""
         await self._state.update_daily(last_suggestion=None, last_suggestion_ts=None)
-        msg = f"Excellent! Well done, {self._config.user_name}. 🎉"
+        msg = f"Done. That's how it's done, {self._config.user_name}. What's next?"
         await send_fn(msg)
         await self._log_bot(msg)
 
     async def handle_still_working(self, send_fn: SendFn) -> None:
         """User is still working on it — just acknowledge."""
-        msg = "Keep at it — you've got this. Let me know when you're done."
+        msg = f"Still working. Good — don't stop. Report back when it's done, {self._config.user_name}."
         await send_fn(msg)
         await self._log_bot(msg)
 
     async def handle_skipped(self, send_fn: SendFn) -> None:
         """User skipped the task — clear suggestion and acknowledge."""
         await self._state.update_daily(last_suggestion=None, last_suggestion_ts=None)
-        msg = "No worries — it'll be there when you're ready."
+        msg = f"Skipped. It's still on the list, {self._config.user_name}. It doesn't disappear."
         await send_fn(msg)
         await self._log_bot(msg)
 

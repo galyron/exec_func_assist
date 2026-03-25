@@ -95,8 +95,8 @@ class MorningRoutineHandler(BaseHandler):
             return
 
         msg = (
-            f"Hey {self._config.user_name}, still there? "
-            "Just check in when you're ready — no pressure."
+            f"{self._config.user_name} — morning check-in is waiting. "
+            "Every minute you delay is momentum you won't get back today."
         )
         await send_fn(msg)
         await self._log_bot(msg)
@@ -140,8 +140,9 @@ class MorningRoutineHandler(BaseHandler):
             ctx = await self._build_context()
             trigger = (
                 f"{self._config.user_name} has completed the morning check-in. "
-                "Generate a brief, warm day-plan summary (2–3 sentences max) "
-                "based on what they shared."
+                "Generate a sharp 2–3 sentence day-plan based on what they shared: "
+                "the priority, the first action, and what stands between them and a good day. "
+                "No fluff. Make it sound like a plan that will actually happen."
             )
             response = await self._llm.send(ctx, trigger)
             await self._state.update_daily(morning_complete=True)

@@ -119,7 +119,7 @@ async def test_handle_text_response_good(handler):
     send_fn = AsyncMock()
     await handler.handle_text_response("all good!", send_fn)
     send_fn.assert_called_once()
-    assert "👍" in send_fn.call_args[0][0] or "nice" in send_fn.call_args[0][0].lower()
+    assert "good" in send_fn.call_args[0][0].lower() or "moving" in send_fn.call_args[0][0].lower()
 
 
 async def test_handle_text_response_skip(handler):

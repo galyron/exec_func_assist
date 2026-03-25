@@ -169,7 +169,7 @@ class OnDemandHandler(BaseHandler):
 
     async def _handle_finished(self, text: str, send_fn: SendFn) -> None:
         self._followup.cancel()
-        msg = f"Nice work, {self._config.user_name}! Marking that done. 🎉"
+        msg = f"Done. What's next, {self._config.user_name}?"
         await send_fn(msg)
         await self._log_user(text)
         await self._log_bot(msg)
@@ -178,8 +178,9 @@ class OnDemandHandler(BaseHandler):
         ctx = await self._build_context()
         trigger = (
             f"{self._config.user_name} says they're stuck. "
-            "Ask what specifically is blocking them, then suggest the single smallest possible "
-            "next action. Be warm, concrete, and brief (under 80 words)."
+            "Name what is most likely blocking them based on context. "
+            "Give the single smallest physical action that breaks the freeze. "
+            "Direct and concrete — under 80 words. No comfort, no padding."
         )
         response = await self._llm.send(ctx, trigger)
         await send_fn(response)
@@ -187,7 +188,7 @@ class OnDemandHandler(BaseHandler):
         await self._log_bot(response)
 
     async def _handle_skip(self, send_fn: SendFn) -> None:
-        msg = "No problem — come back when you're ready."
+        msg = f"Skipped. That task is still on the list, {self._config.user_name}."
         await send_fn(msg)
         await self._log_bot(msg)
 
