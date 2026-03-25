@@ -54,7 +54,7 @@ Optional: set `security_alerts_channel_id` to a Discord channel ID to receive al
 The bot reads your notes via the Joplin REST API. The Joplin container needs a Dropbox OAuth token to sync your notes.
 
 ```sh
-docker compose run --rm -it joplin sh
+docker compose run --rm --entrypoint sh joplin
 # inside the container:
 joplin config sync.target 7
 joplin sync          # prints a browser auth URL — open it on your machine
@@ -70,14 +70,17 @@ JOPLIN_DROPBOX_AUTH='<paste token here>'
 
 Keep the single quotes in case the token contains special characters.
 
-### 3. Google Calendar OAuth (run on MacBook — needs a browser)
+### 3. Google Calendar OAuth (MacBook only — requires a browser)
+
+This step must be run on your MacBook, not on mbox. It opens a browser consent screen and writes `secrets/google_token.json`, which you then copy to mbox.
 
 ```sh
-pip install google-api-python-client google-auth-oauthlib
-python setup_calendar.py
+python3 -m venv .venv-setup
+.venv-setup/bin/pip install google-api-python-client google-auth-oauthlib
+.venv-setup/bin/python setup_calendar.py
 ```
 
-This opens a browser consent screen and writes `secrets/google_token.json`. The file is gitignored — copy it to the production machine before the first deploy.
+The venv is throwaway — you can delete it after. `secrets/google_token.json` is gitignored; copy it to mbox manually (see the prod deploy section below).
 
 To see which calendars are visible and exclude any unwanted ones:
 
