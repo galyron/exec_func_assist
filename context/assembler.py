@@ -201,7 +201,13 @@ def _format_context(
         for e in all_day:
             lines.append(f"  [all-day]          {e.title}")
         for e in timed:
-            lines.append(f"  {e.start.strftime('%H:%M')}–{e.end.strftime('%H:%M')}  {e.title}")
+            if e.end <= now:
+                label = "[past]    "
+            elif e.start <= now:
+                label = "[now]     "
+            else:
+                label = "[upcoming]"
+            lines.append(f"  {label} {e.start.strftime('%H:%M')}–{e.end.strftime('%H:%M')}  {e.title}")
     else:
         lines.append("  (no events today)")
 
