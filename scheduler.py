@@ -67,21 +67,29 @@ class Scheduler:
         self._scheduler.shutdown(wait=False)
         log.info("Scheduler stopped.")
 
-    async def trigger(self, name: str) -> bool:
+    async def trigger(self, name: str, send_fn: Optional[SendFn] = None) -> bool:
         """Manually fire a named job. Returns True if the name was recognised.
 
-        Valid names: morning, retry, kickoff, midday, evening, eod, bedtime.
+        Args:
+            name: Job name — morning, retry, kickoff, midday, evening, eod, bedtime.
+            send_fn: If provided, the routine sends here instead of the configured
+                channel. Pass message.reply to fire back to wherever the command came from.
         """
-        jobs: dict[str, Callable] = {
-            "morning":  self._fire_morning,
-            "retry":    self._fire_morning_retry,
-            "kickoff":  self._fire_kickoff,
-            "midday":   self._fire_midday,
-            "evening":  self._fire_evening,
-            "eod":      self._fire_end_of_day,
-            "bedtime":  self._fire_bedtime,
+        effective = send_fn or self._get_send_fn()
+        if effective is None:
+            log.warning("Manual trigger %r: Discord channel unavailable.", name)
+            return False
+
+        handlers: dict[str, Callable] = {
+            "morning":  lambda: self._morning.fire(effective),
+            "retry":    lambda: self._morning.fire_retry(effective),
+            "kickoff":  lambda: self._kickoff.fire(effective),
+            "midday":   lambda: self._checkin.fire(CheckinType.MIDDAY, effective),
+            "evening":  lambda: self._checkin.fire(CheckinType.EVENING, effective),
+            "eod":      lambda: self._bedtime.fire_end_of_day(effective),
+            "bedtime":  lambda: self._bedtime.fire_bedtime(effective),
         }
-        fn = jobs.get(name)
+        fn = handlers.get(name)
         if fn is None:
             return False
         log.info("Manual trigger: %s", name)
