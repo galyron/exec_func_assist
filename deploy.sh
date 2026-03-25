@@ -2,21 +2,17 @@
 # deploy.sh — push latest code to mbox and restart the Docker stack.
 #
 # Usage:  ./deploy.sh
-#
-# Set MBOX_USER and MBOX_HOST below, or export them before running.
 
 set -euo pipefail
 
-MBOX_USER="${MBOX_USER:-gmate}"        # your username on mbox
-#MBOX_HOST="${MBOX_HOST:-192.168.178.24}"  # mbox LAN IP
-MBOX_HOST="${MBOX_HOST:-mbox}"  # mbox LAN IP
-REMOTE_DIR="${REMOTE_DIR:-~/services/exec_func_assist}"
+MBOX_USER="${MBOX_USER:-gmate}"
+MBOX_HOST="${MBOX_HOST:-mbox}"
 
-echo "▶ Deploying to ${MBOX_USER}@${MBOX_HOST}:${REMOTE_DIR}"
+echo "▶ Deploying to ${MBOX_USER}@${MBOX_HOST}"
 
-ssh "${MBOX_USER}@${MBOX_HOST}" bash <<EOF
+ssh "${MBOX_USER}@${MBOX_HOST}" bash <<'EOF'
   set -euo pipefail
-  cd "${REMOTE_DIR}"
+  cd ~/services/exec_func_assist
   echo "  pulling latest code..."
   git pull --ff-only
   echo "  rebuilding and restarting containers..."
