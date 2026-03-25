@@ -19,6 +19,15 @@ from zoneinfo import ZoneInfo
 import discord
 
 from config import ConfigError, load_config
+from connectors.calendar import CalendarConnector
+from connectors.joplin import JoplinConnector
+from context.assembler import ContextAssembler
+from handlers.bedtime import BedtimeHandler
+from handlers.checkin import CheckinHandler
+from handlers.kickoff import KickoffHandler
+from handlers.morning import MorningRoutineHandler
+from llm.client import LLMClient
+from scheduler import Scheduler
 from state.manager import StateManager
 from utils.clock import Clock, DebugClock, RealClock
 
@@ -27,6 +36,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 log = logging.getLogger("efa.bot")
+
+_TOKEN_PATH = Path("secrets/google_token.json")
 
 
 class EFABot(discord.Client):
@@ -41,6 +52,14 @@ class EFABot(discord.Client):
         config,
         state: StateManager,
         clock: Clock,
+        joplin: JoplinConnector,
+        calendar: CalendarConnector,
+        assembler: ContextAssembler,
+        llm: LLMClient,
+        morning_handler: MorningRoutineHandler,
+        kickoff_handler: KickoffHandler,
+        checkin_handler: CheckinHandler,
+        bedtime_handler: BedtimeHandler,
         *,
         debug: bool = False,
     ) -> None:
@@ -50,7 +69,16 @@ class EFABot(discord.Client):
         self.config = config
         self.state = state
         self.clock = clock
+        self.joplin = joplin
+        self.calendar = calendar
+        self.assembler = assembler
+        self.llm = llm
+        self.morning_handler = morning_handler
+        self.kickoff_handler = kickoff_handler
+        self.checkin_handler = checkin_handler
+        self.bedtime_handler = bedtime_handler
         self.debug = debug
+        self._scheduler: Scheduler | None = None
 
     # ── Discord lifecycle ─────────────────────────────────────────────────────
 
@@ -65,10 +93,7 @@ class EFABot(discord.Client):
         mode = "DEBUG" if self.debug else "PRODUCTION"
         log.info(
             "Bot ready as %s | mode=%s | user=%s | channel=%s",
-            self.user,
-            mode,
-            self.config.user_name,
-            self.config.discord_channel_id,
+            self.user, mode, self.config.user_name, self.config.discord_channel_id,
         )
         if self.debug:
             log.info(
@@ -76,6 +101,21 @@ class EFABot(discord.Client):
                 self.clock.now().strftime("%Y-%m-%d %H:%M:%S %Z"),
                 self.clock.multiplier if isinstance(self.clock, DebugClock) else 1.0,
             )
+
+        self._scheduler = Scheduler(
+            config=self.config,
+            get_send_fn=self._get_channel_send,
+            morning_handler=self.morning_handler,
+            kickoff_handler=self.kickoff_handler,
+            checkin_handler=self.checkin_handler,
+            bedtime_handler=self.bedtime_handler,
+        )
+        self._scheduler.start()
+
+    async def close(self) -> None:
+        if self._scheduler:
+            self._scheduler.shutdown()
+        await super().close()
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author == self.user:
@@ -96,37 +136,108 @@ class EFABot(discord.Client):
 
     async def _handle_message(self, message: discord.Message) -> None:
         """Single entry point for all user messages — channel and DM alike."""
-        # Phase 1-A: echo only.
-        # In later phases this will be replaced by the Intent Router.
-        source = "DM" if isinstance(message.channel, discord.DMChannel) else "channel"
-        log.info("Message from %s (%s): %s", message.author, source, message.content)
+        text = message.content.strip()
 
-        await message.reply(
-            f"Echo, {self.config.user_name}: {message.content}"
+        # Morning routine takes routing priority when active
+        if await self.morning_handler.is_active():
+            done = await self.morning_handler.handle_response(text, message.reply)
+            if done:
+                log.info("Morning routine complete.")
+            return
+
+        # Check-in text shortcuts ("done", "skip", "stuck")
+        lower = text.lower()
+        if any(w in lower for w in ("done", "all good", "skip", "stuck", "struggling")):
+            await self.checkin_handler.handle_text_response(text, message.reply)
+            return
+
+        # General message — LLM response in current mode (C12 full routing in Phase 1-E)
+        await self._llm_reply(text, message.reply)
+
+    async def _llm_reply(self, text: str, send_fn) -> None:
+        try:
+            tasks, events, interactions = await asyncio.gather(
+                self.joplin.get_tasks(),
+                self.calendar.get_events(),
+                self.state.get_recent_interactions(5),
+            )
+            ctx = await self.assembler.assemble(tasks, events, interactions)
+            response = await self.llm.send(ctx, text)
+            await send_fn(response)
+        except Exception as exc:
+            log.error("LLM reply failed: %s", exc)
+            await send_fn("Something went wrong on my end — try again in a moment.")
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _get_channel_send(self):
+        """Return channel.send or None if the channel isn't available."""
+        channel = self.get_channel(self.config.discord_channel_id)
+        return channel.send if channel else None
+
+
+# ── Factory ───────────────────────────────────────────────────────────────────
+
+def _build_bot(args: argparse.Namespace, config, clock: Clock) -> EFABot:
+    state = StateManager(clock=clock)
+
+    joplin = JoplinConnector(
+        host=config.joplin_host,
+        port=config.joplin_api_port,
+        token=config.joplin_api_token,
+    )
+    calendar = CalendarConnector(
+        token_path=_TOKEN_PATH,
+        timezone=config.timezone,
+        excluded_calendar_ids=config.excluded_calendar_ids,
+        min_gap_min=config.min_gap_for_nudge_min,
+    )
+    assembler = ContextAssembler(config=config, state_manager=state, clock=clock)
+    llm = LLMClient(config=config, state_manager=state)
+
+    async def build_context():
+        tasks, events, interactions = await asyncio.gather(
+            joplin.get_tasks(),
+            calendar.get_events(),
+            state.get_recent_interactions(5),
         )
+        return await assembler.assemble(tasks, events, interactions)
+
+    morning = MorningRoutineHandler(
+        config=config, state_manager=state, clock=clock,
+        llm_client=llm, context_builder=build_context,
+    )
+    kickoff = KickoffHandler(
+        config=config, state_manager=state, clock=clock,
+        llm_client=llm, context_builder=build_context,
+    )
+    checkin = CheckinHandler(
+        config=config, state_manager=state, clock=clock,
+        llm_client=llm, context_builder=build_context,
+    )
+    bedtime = BedtimeHandler(
+        config=config, state_manager=state, clock=clock,
+        llm_client=llm, context_builder=build_context,
+    )
+
+    return EFABot(
+        config, state, clock,
+        joplin, calendar, assembler, llm,
+        morning, kickoff, checkin, bedtime,
+        debug=args.debug,
+    )
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Executive Function Assistant Bot")
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Enable debug/time-simulation mode.",
-    )
-    parser.add_argument(
-        "--debug-time",
-        metavar="YYYY-MM-DD HH:MM",
-        help="Simulated start datetime (requires --debug).",
-    )
-    parser.add_argument(
-        "--debug-multiplier",
-        type=float,
-        default=60.0,
-        metavar="N",
-        help="Simulated minutes per real minute (default 60 → 1 real min = 1 sim hour).",
-    )
+    parser.add_argument("--debug", action="store_true",
+                        help="Enable debug/time-simulation mode.")
+    parser.add_argument("--debug-time", metavar="YYYY-MM-DD HH:MM",
+                        help="Simulated start datetime (requires --debug).")
+    parser.add_argument("--debug-multiplier", type=float, default=60.0, metavar="N",
+                        help="Simulated minutes per real minute (default 60).")
     return parser.parse_args()
 
 
@@ -140,11 +251,8 @@ def _build_clock(args: argparse.Namespace, timezone: str) -> Clock:
     else:
         start = datetime.now(tz)
 
-    log.info(
-        "Debug mode: simulated start=%s, multiplier=%.1fx",
-        start.strftime("%Y-%m-%d %H:%M %Z"),
-        args.debug_multiplier,
-    )
+    log.info("Debug mode: simulated start=%s, multiplier=%.1fx",
+             start.strftime("%Y-%m-%d %H:%M %Z"), args.debug_multiplier)
     return DebugClock(start_time=start, multiplier=args.debug_multiplier)
 
 
@@ -158,9 +266,7 @@ def main() -> None:
         raise SystemExit(1) from exc
 
     clock = _build_clock(args, config.timezone)
-    state = StateManager(clock=clock)
-    bot = EFABot(config, state, clock, debug=args.debug)
-
+    bot = _build_bot(args, config, clock)
     bot.run(config.discord_bot_token, log_handler=None)
 
 
