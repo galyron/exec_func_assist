@@ -54,21 +54,21 @@ Optional: set `security_alerts_channel_id` to a Discord channel ID to receive al
 The bot reads your notes via the Joplin REST API. The Joplin container needs a Dropbox OAuth token to sync your notes.
 
 ```sh
-docker compose run --rm joplin sh
+docker compose run --rm -it joplin sh
 # inside the container:
 joplin config sync.target 7
 joplin sync          # prints a browser auth URL — open it on your machine
-joplin config sync.7.auth   # copy the entire JSON output
+joplin config sync.7.auth   # copy the output (token string)
 exit
 ```
 
-Paste the copied JSON into `.env`:
+Paste the copied token into `.env`:
 
 ```
-JOPLIN_DROPBOX_AUTH='{"access_token":"...","token_type":"bearer",...}'
+JOPLIN_DROPBOX_AUTH='<paste token here>'
 ```
 
-Keep the single quotes — the JSON contains special characters.
+Keep the single quotes in case the token contains special characters.
 
 ### 3. Google Calendar OAuth (run on MacBook — needs a browser)
 
