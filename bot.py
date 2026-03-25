@@ -24,8 +24,10 @@ from connectors.joplin import JoplinConnector
 from context.assembler import ContextAssembler
 from handlers.bedtime import BedtimeHandler
 from handlers.checkin import CheckinHandler
+from handlers.followup import FollowupHandler
 from handlers.kickoff import KickoffHandler
 from handlers.morning import MorningRoutineHandler
+from handlers.on_demand import OnDemandHandler
 from llm.client import LLMClient
 from scheduler import Scheduler
 from state.manager import StateManager
@@ -60,6 +62,8 @@ class EFABot(discord.Client):
         kickoff_handler: KickoffHandler,
         checkin_handler: CheckinHandler,
         bedtime_handler: BedtimeHandler,
+        on_demand_handler: OnDemandHandler,
+        followup_handler: FollowupHandler,
         *,
         debug: bool = False,
     ) -> None:
@@ -77,6 +81,8 @@ class EFABot(discord.Client):
         self.kickoff_handler = kickoff_handler
         self.checkin_handler = checkin_handler
         self.bedtime_handler = bedtime_handler
+        self.on_demand_handler = on_demand_handler
+        self.followup_handler = followup_handler
         self.debug = debug
         self._scheduler: Scheduler | None = None
 
@@ -111,6 +117,7 @@ class EFABot(discord.Client):
             bedtime_handler=self.bedtime_handler,
         )
         self._scheduler.start()
+        self.followup_handler.set_apscheduler(self._scheduler._scheduler)
 
     async def close(self) -> None:
         if self._scheduler:
@@ -145,28 +152,8 @@ class EFABot(discord.Client):
                 log.info("Morning routine complete.")
             return
 
-        # Check-in text shortcuts ("done", "skip", "stuck")
-        lower = text.lower()
-        if any(w in lower for w in ("done", "all good", "skip", "stuck", "struggling")):
-            await self.checkin_handler.handle_text_response(text, message.reply)
-            return
-
-        # General message — LLM response in current mode (C12 full routing in Phase 1-E)
-        await self._llm_reply(text, message.reply)
-
-    async def _llm_reply(self, text: str, send_fn) -> None:
-        try:
-            tasks, events, interactions = await asyncio.gather(
-                self.joplin.get_tasks(),
-                self.calendar.get_events(),
-                self.state.get_recent_interactions(5),
-            )
-            ctx = await self.assembler.assemble(tasks, events, interactions)
-            response = await self.llm.send(ctx, text)
-            await send_fn(response)
-        except Exception as exc:
-            log.error("LLM reply failed: %s", exc)
-            await send_fn("Something went wrong on my end — try again in a moment.")
+        # All other messages route through the on-demand handler (C12)
+        await self.on_demand_handler.handle(text, message.reply)
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -219,13 +206,26 @@ def _build_bot(args: argparse.Namespace, config, clock: Clock) -> EFABot:
         config=config, state_manager=state, clock=clock,
         llm_client=llm, context_builder=build_context,
     )
+    followup = FollowupHandler(
+        config=config, state_manager=state, clock=clock,
+        get_send_fn=lambda: None,  # overwritten below once bot is constructed
+    )
+    on_demand = OnDemandHandler(
+        config=config, state_manager=state, clock=clock,
+        llm_client=llm, context_builder=build_context,
+        followup_handler=followup,
+    )
 
-    return EFABot(
+    bot = EFABot(
         config, state, clock,
         joplin, calendar, assembler, llm,
         morning, kickoff, checkin, bedtime,
+        on_demand, followup,
         debug=args.debug,
     )
+    # Wire followup's channel-send getter to the live bot instance
+    followup._get_send_fn = bot._get_channel_send
+    return bot
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

@@ -1,0 +1,188 @@
+"""C12 — On-Demand Handler.
+
+Routes arbitrary user messages to the correct sub-handler based on detected
+intent. All intents except GENERAL avoid an LLM call when possible.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from enum import Enum
+from typing import TYPE_CHECKING, Awaitable, Callable
+
+from config import Config
+from context.assembler import AssembledContext
+from handlers.base import BaseHandler, SendFn
+from llm.client import LLMClient
+from state.manager import StateManager
+from utils.clock import Clock
+
+if TYPE_CHECKING:
+    from handlers.followup import FollowupHandler
+
+log = logging.getLogger(__name__)
+
+
+class Intent(str, Enum):
+    OFF_TODAY = "off_today"
+    FINISHED = "finished"
+    STUCK = "stuck"
+    SKIP = "skip"
+    ADD_TASK = "add_task"
+    USE_OPUS = "use_opus"
+    GENERAL = "general"
+
+
+# ── Pure intent detection (module-level for easy testing) ─────────────────────
+
+def detect_intent(text: str) -> Intent:
+    """Classify a user message into an Intent without side effects."""
+    lower = text.lower().strip()
+
+    if re.search(r"<use_opus>", lower):
+        return Intent.USE_OPUS
+
+    if lower.startswith("off today"):
+        return Intent.OFF_TODAY
+
+    if lower.startswith("add:") or lower.startswith("add :"):
+        return Intent.ADD_TASK
+
+    if re.search(r"\b(done|finished|completed|i finished|done with)\b", lower):
+        return Intent.FINISHED
+
+    if re.search(r"\b(stuck|struggling)\b", lower):
+        return Intent.STUCK
+
+    if re.search(r"^skip\b", lower):
+        return Intent.SKIP
+
+    return Intent.GENERAL
+
+
+# ── Handler ───────────────────────────────────────────────────────────────────
+
+class OnDemandHandler(BaseHandler):
+    """C12 — Routes on-demand user messages by intent.
+
+    Args:
+        config: Bot configuration.
+        state_manager: For state reads/writes and interaction logging.
+        clock: Clock instance.
+        llm_client: Used for STUCK and GENERAL intents.
+        context_builder: Async callable returning a fresh AssembledContext.
+        followup_handler: C13 instance for scheduling/cancelling follow-ups.
+    """
+
+    def __init__(
+        self,
+        config: Config,
+        state_manager: StateManager,
+        clock: Clock,
+        llm_client: LLMClient,
+        context_builder: Callable[[], Awaitable[AssembledContext]],
+        followup_handler: FollowupHandler,
+    ) -> None:
+        super().__init__(config, state_manager, clock)
+        self._llm = llm_client
+        self._build_context = context_builder
+        self._followup = followup_handler
+
+    async def handle(self, text: str, send_fn: SendFn) -> None:
+        """Dispatch text to the correct sub-handler based on intent."""
+        intent = detect_intent(text)
+        log.debug("OnDemandHandler: intent=%s text=%r", intent, text[:80])
+
+        if intent == Intent.OFF_TODAY:
+            await self._handle_off_today(text, send_fn)
+        elif intent == Intent.FINISHED:
+            await self._handle_finished(text, send_fn)
+        elif intent == Intent.STUCK:
+            await self._handle_stuck(send_fn)
+        elif intent == Intent.SKIP:
+            await self._handle_skip(send_fn)
+        elif intent == Intent.ADD_TASK:
+            await self._handle_add_task(text, send_fn)
+        elif intent == Intent.USE_OPUS:
+            await self._handle_use_opus(send_fn)
+        else:
+            await self._handle_general(text, send_fn)
+
+    # ── Intent sub-handlers ───────────────────────────────────────────────────
+
+    async def _handle_off_today(self, text: str, send_fn: SendFn) -> None:
+        full_silence = "full silence" in text.lower()
+        await self._state.update_daily(
+            off_today=True,
+            off_today_full_silence=full_silence,
+        )
+        if full_silence:
+            msg = "Got it — staying quiet for the rest of the day. Take care of yourself."
+        else:
+            msg = (
+                f"Got it, {self._config.user_name}. I'll keep quiet today. "
+                "Bedtime reminder still on — reply 'off today full silence' to mute that too."
+            )
+        await send_fn(msg)
+        await self._log_user(text)
+        await self._log_bot(msg)
+
+    async def _handle_finished(self, text: str, send_fn: SendFn) -> None:
+        self._followup.cancel()
+        msg = f"Nice work, {self._config.user_name}! Marking that done. 🎉"
+        await send_fn(msg)
+        await self._log_user(text)
+        await self._log_bot(msg)
+
+    async def _handle_stuck(self, send_fn: SendFn) -> None:
+        ctx = await self._build_context()
+        trigger = (
+            f"{self._config.user_name} says they're stuck. "
+            "Ask what specifically is blocking them, then suggest the single smallest possible "
+            "next action. Be warm, concrete, and brief (under 80 words)."
+        )
+        response = await self._llm.send(ctx, trigger)
+        await send_fn(response)
+        await self._followup.schedule(response)
+        await self._log_bot(response)
+
+    async def _handle_skip(self, send_fn: SendFn) -> None:
+        msg = "No problem — come back when you're ready."
+        await send_fn(msg)
+        await self._log_bot(msg)
+
+    async def _handle_add_task(self, text: str, send_fn: SendFn) -> None:
+        # Parse the task text after "add:" prefix
+        match = re.match(r"add\s*:\s*(.+)", text.strip(), re.IGNORECASE)
+        task_text = match.group(1).strip() if match else text.strip()
+
+        daily = await self._state.get_daily()
+        queue = list(daily.get("task_queue") or [])
+        ts = self._clock.now().isoformat()
+        queue.append({"id": f"local_{ts}", "title": task_text, "added_at": ts})
+        await self._state.update_daily(task_queue=queue)
+
+        msg = f"Added to your queue: **{task_text}**"
+        await send_fn(msg)
+        await self._log_user(text)
+        await self._log_bot(msg)
+
+    async def _handle_use_opus(self, send_fn: SendFn) -> None:
+        await self._state.update_daily(
+            opus_session_active=True,
+            opus_session_messages=0,
+        )
+        msg = (
+            "Switching to Opus for this session. "
+            "I'll use claude-opus-4-6 until the session ends or the message limit is reached."
+        )
+        await send_fn(msg)
+        await self._log_bot(msg)
+
+    async def _handle_general(self, text: str, send_fn: SendFn) -> None:
+        ctx = await self._build_context()
+        response = await self._llm.send(ctx, text)
+        await send_fn(response)
+        await self._log_user(text)
+        await self._log_bot(response)
