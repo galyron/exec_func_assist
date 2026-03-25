@@ -266,8 +266,9 @@ def scheduler():
 
 async def test_handle_trigger_calls_scheduler(handler, scheduler):
     handler.set_scheduler(scheduler)
-    await handler.handle("!evening", AsyncMock())
-    scheduler.trigger.assert_called_once_with("evening")
+    send_fn = AsyncMock()
+    await handler.handle("!evening", send_fn)
+    scheduler.trigger.assert_called_once_with("evening", send_fn)
 
 
 async def test_handle_trigger_sends_ack(handler, scheduler):

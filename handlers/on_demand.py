@@ -148,7 +148,7 @@ class OnDemandHandler(BaseHandler):
             await send_fn("Scheduler not ready yet — try again in a moment.")
             return
         await send_fn(f"Triggering `{job}`...")
-        await self._scheduler.trigger(job)
+        await self._scheduler.trigger(job, send_fn)
 
     async def _handle_off_today(self, text: str, send_fn: SendFn) -> None:
         full_silence = "full silence" in text.lower()
