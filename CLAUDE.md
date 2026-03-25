@@ -6,9 +6,60 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**exec_func_assist** is a Discord-based executive function assistant bot backed by the Claude API. It functions as a productivity prosthetic: proactive nudges, structured check-ins, task decomposition, and energy-aware suggestions throughout the day. The full spec is in `exec_function_assistant_spec_v0.3.md` — read it before implementing anything.
+**exec_func_assist** (EVA) is a Discord-based executive function assistant bot backed by the Claude API. It sends proactive structured check-ins, task suggestions, and energy-aware nudges throughout the day. The full spec is in `exec_function_assistant_spec_v0.3.md`. Architecture decisions are in `DECISIONS.md`. The phased build plan is in `PLAN.md`.
 
-This is a **greenfield project**. No implementation exists yet. Follow `/kickoff` before beginning any phase.
+**Implementation status:** Phases 1-A, 1-B, and 1-C are complete. The bot skeleton, connectors, context assembler, and LLM client are all working. Phase 1-D (scheduled check-ins) is next.
+
+---
+
+## Common Commands
+
+**Run all tests:**
+```sh
+python -m pytest tests/ -q
+```
+
+**Run a single test file:**
+```sh
+python -m pytest tests/connectors/test_joplin.py -q
+```
+
+**Run a single test by name:**
+```sh
+python -m pytest tests/context/test_assembler.py -k "test_mode_weekend" -q
+```
+
+**Start the full stack (dev):**
+```sh
+docker compose up
+```
+
+**Rebuild and restart:**
+```sh
+docker compose up --build
+```
+
+**Verify connectors (stack must be running):**
+```sh
+docker compose run --rm bot python -m connectors.joplin
+docker compose run --rm bot python -m connectors.calendar
+```
+
+**Verify context assembly + LLM end-to-end:**
+```sh
+docker compose run --rm bot python -m context.assembler
+docker compose run --rm bot python -m llm.client
+```
+
+**Debug mode (time simulation):**
+```sh
+docker compose run --rm bot python bot.py --debug --debug-time "2026-03-24 07:25" --debug-multiplier 120
+```
+
+**One-time Google Calendar OAuth setup (run on MacBook, needs browser):**
+```sh
+python setup_calendar.py
+```
 
 ---
 
@@ -19,102 +70,111 @@ This is a **greenfield project**. No implementation exists yet. Follow `/kickoff
 | Language | Python 3.12 | Matches Ubuntu 24.10 on mbox |
 | Bot framework | `discord.py` 2.x | Buttons, embeds, @mentions |
 | Scheduler | `APScheduler` `AsyncIOScheduler` | Runs within the bot's asyncio event loop |
-| LLM | Anthropic Python SDK | Sonnet default; Opus on demand via `<USE_OPUS>` tag |
+| LLM | Anthropic Python SDK | Sonnet default (`claude-sonnet-4-6`); Opus on demand |
 | Joplin | `aiohttp` → `http://joplin:41184` | Joplin CLI in Docker; read-only in Phases 1–2 |
-| Calendar | Google Calendar API v3 | OAuth2, `calendar.readonly`; consolidated via ICS subscription URLs |
-| State | JSON files + `aiofiles` | **Not SQLite.** One file per domain: `state.json`, `interactions.json`, `memory.json` |
-| Deployment | Docker Compose | Same `docker-compose.yml` for dev (MacBook) and prod (mbox, 192.168.178.24) |
+| Calendar | Google Calendar API v3 | OAuth2, `calendar.readonly` |
+| State | JSON files + `aiofiles` | **Not SQLite.** `state.json`, `interactions.json`, `memory.json` |
+| Deployment | Docker Compose | Same `docker-compose.yml` for dev (MacBook) and prod (mbox) |
 | Timezone | `Europe/Berlin` | All scheduling and time logic |
 
-**Services in docker-compose:** `bot` (built from `./Dockerfile`), `joplin` (Joplin CLI container).
+**Services:** `eva-bot-dev` (bot container), `eva-joplin-dev` (Joplin CLI + socat forwarder).
 
-**Dev workflow:** `docker compose up` on MacBook. Full stack runs locally — no mbox needed during development.
+**Joplin network note:** Joplin's REST API only binds to `127.0.0.1` inside its container. The entrypoint runs Joplin on internal port 41185 and uses `socat` to forward `0.0.0.0:41184 → 127.0.0.1:41185` so the bot can reach it via Docker DNS (`http://joplin:41184`).
 
-**Deploy to mbox:** `./deploy.sh` → SSH → `git pull && docker compose up -d --build`.
-
-**Google OAuth2:** Run `setup_calendar.py` on MacBook (has browser), copy `secrets/google_token.json` to mbox before first prod deploy.
+**Prod deploy:** `./deploy.sh` → SSH to mbox (192.168.178.24) → `git pull && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`.
 
 ---
 
-## Architectural Decisions (Non-Negotiable)
+## Architecture
 
-These are closed decisions from the spec and kickoff. Do not re-open without flagging explicitly. Full rationale in `DECISIONS.md`.
+### Data Flow
 
-- **JSON files for state, not SQLite.**
-- **`user_id` on every state record from day one.** Multi-user is Phase 3; structure must support it from the start.
-- **Configuration is per-user, not global constants.**
-- **Joplin is read-only in Phases 1 and 2.**
-- **Google Calendar is the only calendar integration.** External calendars consolidated via ICS subscription URLs — no separate sync service (Keeper.sh was evaluated and rejected: strips event names).
-- **No authentication layer in Phase 1.**
-- **Bot initiates interactions; user does not need to prompt it.**
-- **Nothing calls `datetime.now()` directly.** All time-dependent logic uses the `Clock` abstraction (C16) so debug/time-simulation works.
+```
+JoplinConnector  ─┐
+CalendarConnector ─┤──▶  ContextAssembler  ──▶  LLMClient  ──▶  Discord
+StateManager      ─┘         (C5)               (C6)
+```
+
+Every LLM call: fetch tasks + events + recent interactions → assemble context string → send to Claude → post response to Discord.
+
+### Key Modules
+
+**`config.py` (C1)** — Frozen `Config` dataclass. Loads secrets from `.env`, settings from `config.json`. Raises `ConfigError` on missing values. `config.json` is committed (no secrets); `.env` is gitignored.
+
+**`state/manager.py` (C2)** — `StateManager`: async read/write for three JSON files. Writes are atomic (`.tmp` → rename). Handles daily rollover (archives `daily` → `previous_daily` on date change). Key methods: `get_daily()`, `update_daily(**kwargs)`, `append_interaction()`, `get_recent_interactions(n)`, `has_previous_daily()`.
+
+**`connectors/models.py`** — Shared output types: `Task`, `CalendarEvent`, `FreeWindow`. These are the contract between connectors and `ContextAssembler`. New calendar sources only need to produce these types.
+
+**`connectors/joplin.py` (C3)** — Reads all notes via Joplin REST API with pagination. Two task sources: standalone todo notes (`is_todo=1`) and unchecked checklist items in regular note bodies. Extracts inline tags `[high]`, `[low-energy]`, `[couch]`, `[easy]`. Returns `[]` on failure (graceful degradation).
+
+**`connectors/calendar.py` (C4)** — Enumerates all selected calendars via `calendarList.list` (not just `primary`). Fetches events per calendar. Pure function `compute_free_windows()` computes free time slots. Excluded calendars configured via `excluded_calendar_ids` in `config.json`.
+
+**`context/assembler.py` (C5)** — Pure functions `determine_mode()` and `determine_energy()` are module-level (testable without class). `ContextAssembler.assemble()` takes pre-fetched data and returns `AssembledContext` with a formatted `text` field ready for the LLM.
+
+**`llm/client.py` (C6)** — `LLMClient.send()` selects Sonnet/Opus based on session state, prepends the context string to the user message, tracks monthly spend in `state.json`, enforces `monthly_cost_limit_usd`. Opus auto-reverts after `opus_session_max_messages`.
+
+**`llm/prompts.py`** — System prompts keyed by `Mode` enum. Tone constraints are encoded here; this is a first-class feature, not an afterthought.
+
+**`utils/clock.py` (C16)** — `Clock` abstraction. `RealClock` for production; `DebugClock` for time-simulation (configurable multiplier). **Nothing calls `datetime.now()` directly** — always use `clock.now()`.
+
+**`bot.py` (C7)** — `EFABot(discord.Client)`. Currently echoes messages (Phase 1-A stub). Will route to handlers in Phase 1-D. Both channel and DM messages go through the same `_handle_message()`.
+
+### Mode Determination (weekdays)
+
+| Time | Mode |
+|------|------|
+| Before `work_start` (09:15) | `MORNING` |
+| `work_start` → `work_end` (16:00) | `WORK` |
+| `work_end` → `evening_start` (20:30) | `GENERAL` |
+| After `evening_start` | `RECOVERY` |
+| Saturday / Sunday | `WEEKEND` |
+
+### Energy Heuristic
+
+Declared energy (from morning routine) always overrides. Default:
+- `RECOVERY` or `WEEKEND` → `low`
+- Within ±60 min of `midday_checkin` (13:00) → `medium-low`
+- Otherwise → `medium`
+
+---
+
+## Non-Negotiable Architectural Decisions
+
+Full rationale in `DECISIONS.md`. Do not re-open without flagging explicitly.
+
+- **JSON state, not SQLite.**
+- **`user_id` on every state record.** Multi-user is Phase 3; structure supports it from day one.
+- **Clock abstraction is mandatory.** Never call `datetime.now()` directly anywhere.
 - **All HTTP I/O is async (`aiohttp`).** Never use `requests` inside a coroutine.
-- **User's name is `Gabriell` (two l's), stored in `config.json` as `user_name`.**
-- **Monthly Anthropic API spend cap: `$10` default, configurable as `monthly_cost_limit_usd`.**
+- **Joplin is read-only in Phases 1 and 2.**
+- **Google Calendar only.** External calendars imported via ICS subscription URLs in Google Calendar — no separate sync service.
+- **User's name is `Gabriell` (two l's)** — stored in `config.json` as `user_name`.
+- **Monthly Anthropic API spend cap: `$10` default**, configurable as `monthly_cost_limit_usd`.
+- **`secrets/` is gitignored.** Contains `google_token.json`, `google_client_secret.json`, and `pre_implementation_checklist.md`. `config.json` is committed (no secrets).
 
 ---
 
-## Bot Operating Modes
+## Bot Behaviour
 
-The bot has three modes (weekday):
-1. **Morning Routine** — structured interview at `07:30`, up to 5 short follow-up questions
-2. **Work Mode** — active `09:15`–`16:00`, assertive tone, task triage and decomposition
-3. **Recovery Mode** — active from `20:30`, depleted-energy framing, 15-minute commitments, couch-compatible tasks prioritized
+**Weekday modes:**
+1. **Morning** (07:30) — structured interview, one question at a time, max 5 follow-ups
+2. **Work** (09:15–16:00) — assertive, concrete first actions, task triage
+3. **Recovery** (20:30+) — low-pressure, couch-compatible tasks, 15-min max commitments
 
-On **weekends**, only Recovery Mode applies (no morning routine, no work nudges). The bot is silent during the day unless the user initiates.
+**Weekends:** silent unless user initiates. Evening nudge configurable via `weekend_evening_nudge`.
 
-The `"off today"` command suppresses all proactive messages for the rest of the day (bedtime reminder still sent unless user says "full silence").
+**`"off today"`** suppresses all proactive messages for the day (bedtime reminder still fires unless `"full silence"`).
 
----
+**Nudge cooldown:** 45 min minimum between unsolicited messages. Calendar gap must be ≥ 30 min to trigger a nudge.
 
-## Scheduled Events (Default Config)
-
-| Event | Default Time |
-|-------|-------------|
-| Morning Routine | `07:30` |
-| Morning retry (if no response) | `07:30 + 90 min` |
-| Day Kick-off | `09:15` |
-| Midday Check-in | `13:00` |
-| Evening Check-in | `20:30` |
-| End-of-Day Review | `22:30` |
-| Bedtime Reminder | `23:00` |
-
-Nudge cooldown: 45 minutes minimum between unsolicited nudges. Minimum calendar gap to trigger a proactive nudge: 30 minutes.
+**Tone (first-class feature):** never guilt/shame/pressure; always offer an easy exit; name the first physical action; default to 15-min commitments.
 
 ---
 
-## Context Assembly
+## Testing
 
-Before each LLM call in Executive Function Assistant mode, assemble:
-- Current time, day of week, current mode
-- Today's calendar (meetings + free windows)
-- Active Joplin tasks (unchecked, sorted by inferred priority)
-- Last 3–5 interaction history entries
-- Estimated energy level
-- Local task queue
-- Morning routine state (completed / skipped / retried)
+Tests use `pytest-asyncio`. Async test functions work without `@pytest.mark.asyncio` — check `pytest.ini` or `pyproject.toml` for `asyncio_mode = auto`.
 
-For general conversation, only the user's message is needed.
+Connectors are always mocked in unit tests — no live API calls. `compute_free_windows()` and `determine_mode()`/`determine_energy()` are pure functions tested exhaustively without mocks.
 
----
-
-## Phased Delivery
-
-- **Phase 1 (MVP):** Bot skeleton, Joplin + Calendar connectors, context assembly, Claude API integration, scheduled check-ins with Discord buttons, JSON state, weekend mode, "off today", missed morning retry.
-- **Phase 2:** Calendar gap detection, deadline proximity alerts, energy-aware mode switching, nudge cooldown, task decomposition, follow-up loop, midday/end-of-day check-ins, structured memory.
-- **Phase 3:** Interaction analytics, user task queue, Joplin write-back, multi-user support, adaptive learning.
-
-Flag gaps between phases during implementation rather than silently filling them with assumptions.
-
----
-
-## Tone Constraints
-
-Tone is a first-class feature. The bot must:
-- Never guilt, shame, or pressure
-- Always offer an easy exit
-- Default to 15-minute commitments
-- Name the first concrete physical action (never abstract suggestions like "work on Project X")
-- Match assertiveness to estimated energy level
-
-Prompt engineering for Recovery Mode tone has the same priority as functional correctness.
+The `conftest.py` in `tests/` sets up shared fixtures.
