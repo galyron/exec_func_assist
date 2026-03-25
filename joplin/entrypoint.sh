@@ -43,6 +43,10 @@ echo "[joplin] Configuring..."
 joplin config api.token "$JOPLIN_API_TOKEN"
 joplin config sync.target 7
 joplin config sync.7.auth "$JOPLIN_DROPBOX_AUTH"
+# Joplin server only binds to 127.0.0.1; we run it on 41185 internally and
+# use socat to forward 0.0.0.0:41184 → 127.0.0.1:41185 so other containers
+# can reach it via Docker DNS.
+joplin config api.port 41185
 
 # ── Initial sync ──────────────────────────────────────────────────────────────
 
@@ -61,7 +65,20 @@ joplin sync && echo "[joplin] Initial sync complete." || echo "[joplin] Initial 
   done
 ) &
 
-# ── Start REST API server ─────────────────────────────────────────────────────
+# ── Start REST API server + socat forwarder ───────────────────────────────────
+# Joplin binds to 127.0.0.1:41185; socat exposes it on 0.0.0.0:41184.
 
-echo "[joplin] Starting REST API server on port 41184..."
-exec joplin server start
+echo "[joplin] Starting REST API server on internal port 41185..."
+joplin server start &
+
+# Wait for Joplin to be ready (up to 30 s)
+for i in $(seq 1 30); do
+  if wget -qO- http://127.0.0.1:41185/ping >/dev/null 2>&1; then
+    echo "[joplin] API ready."
+    break
+  fi
+  sleep 1
+done
+
+echo "[joplin] Starting socat forwarder on 0.0.0.0:41184 → 127.0.0.1:41185..."
+exec socat TCP-LISTEN:41184,bind=0.0.0.0,fork,reuseaddr TCP:127.0.0.1:41185
