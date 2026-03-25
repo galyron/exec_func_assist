@@ -172,6 +172,8 @@ async def test_handle_finished_sends_ack(handler):
     send_fn = AsyncMock()
     await handler.handle("I finished the report", send_fn)
     send_fn.assert_called_once()
+    # Should push for one more action, not just acknowledge
+    assert "good" in send_fn.call_args[0][0].lower() or "moving" in send_fn.call_args[0][0].lower()
 
 
 async def test_handle_finished_cancels_followup(handler, followup_handler):
@@ -346,8 +348,26 @@ def test_intent_done_task_colon():
 def test_intent_done_task_colon_spaced():
     assert detect_intent("done : send the email") == Intent.DONE_TASK
 
+def test_intent_done_task_no_colon():
+    assert detect_intent("done Get rid of Substack account") == Intent.DONE_TASK
+
+def test_intent_done_task_no_colon_lowercase():
+    assert detect_intent("done fix login bug") == Intent.DONE_TASK
+
 def test_intent_done_plain_is_finished():
     assert detect_intent("done") == Intent.FINISHED
+
+def test_intent_done_with_is_finished():
+    assert detect_intent("done with the slides") == Intent.FINISHED
+
+def test_intent_done_already_is_finished():
+    assert detect_intent("done already") == Intent.FINISHED
+
+def test_intent_done_for_today_is_finished():
+    assert detect_intent("done for today") == Intent.FINISHED
+
+def test_intent_done_it_is_finished():
+    assert detect_intent("done it") == Intent.FINISHED
 
 def test_intent_done_i_finished_is_finished():
     assert detect_intent("I finished the report") == Intent.FINISHED

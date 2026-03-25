@@ -74,6 +74,10 @@ def detect_intent(text: str) -> Intent:
     if re.match(r"done\s*:", lower):
         return Intent.DONE_TASK
 
+    # "done <task text>" without colon — but not "done with/it/already/for/today/now/everything"
+    if re.match(r"done\s+(?!(with|it|already|for|today|now|everything)\b)\S", lower):
+        return Intent.DONE_TASK
+
     if re.match(r"(schedule|add\s+event)\s*:", lower):
         return Intent.ADD_EVENT
 
@@ -206,7 +210,17 @@ class OnDemandHandler(BaseHandler):
                 await self._log_bot(msg)
                 return
 
-        msg = f"Done. What's next, {self._config.user_name}?"
+        hour = self._clock.now().hour
+        if hour >= 20:
+            msg = (
+                f"Good. One more before you close out, {self._config.user_name} — "
+                "what's it going to be? The version of you that wins acts now."
+            )
+        else:
+            msg = (
+                f"Good. Keep moving, {self._config.user_name}. "
+                "What's next on the list? The version of you that succeeds acts immediately."
+            )
         await send_fn(msg)
         await self._log_user(text)
         await self._log_bot(msg)
@@ -255,8 +269,8 @@ class OnDemandHandler(BaseHandler):
         await self._log_bot(msg)
 
     async def _handle_done_task(self, text: str, send_fn: SendFn) -> None:
-        """Match `done: <text>` to a Joplin task and mark it complete."""
-        match = re.match(r"done\s*:\s*(.+)", text.strip(), re.IGNORECASE)
+        """Match `done: <text>` or `done <text>` to a Joplin task and mark it complete."""
+        match = re.match(r"done\s*:?\s*(.+)", text.strip(), re.IGNORECASE)
         task_text = match.group(1).strip() if match else ""
 
         if not task_text:
