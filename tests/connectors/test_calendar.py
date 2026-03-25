@@ -210,3 +210,29 @@ async def test_get_events_sorted_by_start(connector):
     with patch("asyncio.to_thread", new=AsyncMock(return_value=raw)):
         events = await connector.get_events()
     assert [e.title for e in events] == ["A", "B", "C"]
+
+
+# ── create_event ──────────────────────────────────────────────────────────────
+
+async def test_create_event_returns_event_id(connector):
+    start = dt(14)
+    end = dt(15)
+    with patch.object(connector, "_insert_event", return_value="new-event-id") as mock_insert:
+        event_id = await connector.create_event("Dentist", start, end, "primary")
+    assert event_id == "new-event-id"
+    mock_insert.assert_called_once_with("Dentist", start, end, "primary")
+
+
+async def test_create_event_defaults_to_primary(connector):
+    start = dt(10)
+    end = dt(11)
+    with patch.object(connector, "_insert_event", return_value="eid") as mock_insert:
+        await connector.create_event("Standup", start, end)
+    _, _, _, cal_id = mock_insert.call_args[0]
+    assert cal_id == "primary"
+
+
+async def test_create_event_propagates_error(connector):
+    with patch.object(connector, "_insert_event", side_effect=RuntimeError("API error")):
+        with pytest.raises(RuntimeError, match="API error"):
+            await connector.create_event("Broken", dt(10), dt(11))

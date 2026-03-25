@@ -87,6 +87,21 @@ class CalendarConnector:
             log.warning("Could not list calendars: %s", exc)
             return []
 
+    async def create_event(
+        self,
+        title: str,
+        start: datetime,
+        end: datetime,
+        calendar_id: str = "primary",
+    ) -> str:
+        """Create a calendar event and return its id.
+
+        Raises RuntimeError on API failure.
+        """
+        return await asyncio.to_thread(
+            self._insert_event, title, start, end, calendar_id
+        )
+
     # ── Internal (sync, runs in thread) ──────────────────────────────────────
 
     def _fetch_events(self, target: Optional[datetime]) -> list[CalendarEvent]:
@@ -186,6 +201,28 @@ class CalendarConnector:
             is_all_day=is_all_day,
             location=item.get("location"),
         )
+
+    def _insert_event(
+        self,
+        title: str,
+        start: datetime,
+        end: datetime,
+        calendar_id: str,
+    ) -> str:
+        from googleapiclient.discovery import build
+
+        creds = self._load_credentials()
+        service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        tz_name = str(self._tz)
+        body = {
+            "summary": title,
+            "start": {"dateTime": start.isoformat(), "timeZone": tz_name},
+            "end": {"dateTime": end.isoformat(), "timeZone": tz_name},
+        }
+        result = service.events().insert(calendarId=calendar_id, body=body).execute()
+        event_id: str = result["id"]
+        log.info("Created calendar event %r (id=%s)", title, event_id)
+        return event_id
 
     def _load_credentials(self):
         from google.auth.transport.requests import Request

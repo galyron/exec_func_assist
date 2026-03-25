@@ -91,6 +91,7 @@ def _make_context():
 def config():
     cfg = MagicMock()
     cfg.user_name = "Gabriell"
+    cfg.timezone = "Europe/Berlin"
     return cfg
 
 
@@ -406,3 +407,95 @@ async def test_handle_finished_no_task_id_skips_joplin(handler_with_joplin, jopl
     state_manager.get_daily = AsyncMock(return_value=_make_daily(last_suggested_task_id=None))
     await handler_with_joplin.handle("done", AsyncMock())
     joplin.mark_done.assert_not_called()
+
+
+# ── detect_intent: ADD_EVENT ──────────────────────────────────────────────────
+
+def test_intent_schedule_colon():
+    assert detect_intent("schedule: dentist tomorrow at 14:00") == Intent.ADD_EVENT
+
+def test_intent_add_event_colon():
+    assert detect_intent("add event: team lunch on Friday") == Intent.ADD_EVENT
+
+def test_intent_add_event_uppercase():
+    assert detect_intent("Schedule: call with client") == Intent.ADD_EVENT
+
+def test_intent_add_task_not_confused_with_add_event():
+    assert detect_intent("add: buy milk") == Intent.ADD_TASK
+
+
+# ── _handle_add_event ─────────────────────────────────────────────────────────
+
+_VALID_EVENT_JSON = '{"title": "Dentist", "date": "2026-03-26", "start_time": "14:00", "duration_min": 60, "calendar_id": "primary"}'
+
+
+@pytest.fixture
+def calendar():
+    cal = MagicMock()
+    cal.create_event = AsyncMock(return_value="new-event-id")
+    return cal
+
+
+@pytest.fixture
+def handler_with_calendar(config, state_manager, clock, llm_client, context_builder, followup_handler, calendar):
+    return OnDemandHandler(
+        config=config, state_manager=state_manager, clock=clock,
+        llm_client=llm_client, context_builder=context_builder,
+        followup_handler=followup_handler, calendar=calendar,
+    )
+
+
+async def test_handle_add_event_calls_create_event(handler_with_calendar, calendar, llm_client):
+    llm_client.send = AsyncMock(return_value=_VALID_EVENT_JSON)
+    send_fn = AsyncMock()
+    await handler_with_calendar.handle("schedule: dentist tomorrow at 14:00", send_fn)
+    calendar.create_event.assert_called_once()
+    args = calendar.create_event.call_args[0]
+    assert args[0] == "Dentist"
+    assert args[1].hour == 14
+    assert args[2].hour == 15  # 60 min later
+
+
+async def test_handle_add_event_sends_confirmation(handler_with_calendar, calendar, llm_client):
+    llm_client.send = AsyncMock(return_value=_VALID_EVENT_JSON)
+    send_fn = AsyncMock()
+    await handler_with_calendar.handle("schedule: dentist", send_fn)
+    send_fn.assert_called_once()
+    assert "dentist" in send_fn.call_args[0][0].lower()
+
+
+async def test_handle_add_event_no_calendar_sends_error(handler):
+    send_fn = AsyncMock()
+    await handler.handle("schedule: dentist at 14:00", send_fn)
+    send_fn.assert_called_once()
+    assert "not available" in send_fn.call_args[0][0].lower()
+
+
+async def test_handle_add_event_bad_json_from_llm(handler_with_calendar, llm_client):
+    llm_client.send = AsyncMock(return_value="this is not json")
+    send_fn = AsyncMock()
+    await handler_with_calendar.handle("schedule: dentist", send_fn)
+    send_fn.assert_called_once()
+    assert "parse" in send_fn.call_args[0][0].lower() or "couldn't" in send_fn.call_args[0][0].lower()
+
+
+async def test_handle_add_event_missing_fields(handler_with_calendar, llm_client):
+    llm_client.send = AsyncMock(return_value='{"title": "Dentist", "date": null, "start_time": null}')
+    send_fn = AsyncMock()
+    await handler_with_calendar.handle("schedule: dentist", send_fn)
+    send_fn.assert_called_once()
+    assert "missing" in send_fn.call_args[0][0].lower()
+
+
+async def test_handle_add_event_add_event_prefix(handler_with_calendar, calendar, llm_client):
+    llm_client.send = AsyncMock(return_value=_VALID_EVENT_JSON)
+    send_fn = AsyncMock()
+    await handler_with_calendar.handle("add event: dentist at 14:00", send_fn)
+    calendar.create_event.assert_called_once()
+
+
+async def test_handle_add_event_markdown_json_stripped(handler_with_calendar, calendar, llm_client):
+    llm_client.send = AsyncMock(return_value="```json\n" + _VALID_EVENT_JSON + "\n```")
+    send_fn = AsyncMock()
+    await handler_with_calendar.handle("schedule: dentist", send_fn)
+    calendar.create_event.assert_called_once()

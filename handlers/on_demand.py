@@ -6,8 +6,10 @@ intent. All intents except GENERAL avoid an LLM call when possible.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from datetime import timedelta
 from enum import Enum
 from typing import TYPE_CHECKING, Awaitable, Callable
 
@@ -19,6 +21,7 @@ from state.manager import StateManager
 from utils.clock import Clock
 
 if TYPE_CHECKING:
+    from connectors.calendar import CalendarConnector
     from connectors.joplin import JoplinConnector
     from handlers.followup import FollowupHandler
     from scheduler import Scheduler
@@ -33,6 +36,7 @@ class Intent(str, Enum):
     STUCK = "stuck"
     SKIP = "skip"
     ADD_TASK = "add_task"
+    ADD_EVENT = "add_event"
     USE_OPUS = "use_opus"
     TRIGGER = "trigger"
     GENERAL = "general"
@@ -69,6 +73,9 @@ def detect_intent(text: str) -> Intent:
 
     if re.match(r"done\s*:", lower):
         return Intent.DONE_TASK
+
+    if re.match(r"(schedule|add\s+event)\s*:", lower):
+        return Intent.ADD_EVENT
 
     if lower.startswith("add:") or lower.startswith("add :"):
         return Intent.ADD_TASK
@@ -109,12 +116,14 @@ class OnDemandHandler(BaseHandler):
         context_builder: Callable[[], Awaitable[AssembledContext]],
         followup_handler: FollowupHandler,
         joplin: "JoplinConnector | None" = None,
+        calendar: "CalendarConnector | None" = None,
     ) -> None:
         super().__init__(config, state_manager, clock)
         self._llm = llm_client
         self._build_context = context_builder
         self._followup = followup_handler
         self._joplin = joplin
+        self._calendar = calendar
         self._scheduler: Scheduler | None = None
 
     def set_scheduler(self, scheduler: Scheduler) -> None:
@@ -140,6 +149,8 @@ class OnDemandHandler(BaseHandler):
             await self._handle_skip(send_fn)
         elif intent == Intent.ADD_TASK:
             await self._handle_add_task(text, send_fn)
+        elif intent == Intent.ADD_EVENT:
+            await self._handle_add_event(text, send_fn)
         elif intent == Intent.USE_OPUS:
             await self._handle_use_opus(send_fn)
         else:
@@ -285,6 +296,76 @@ class OnDemandHandler(BaseHandler):
             msg = f"Marked done in Joplin: **{task.title}**"
         else:
             msg = f"Joplin write failed — couldn't mark **{task.title}** as done."
+        await send_fn(msg)
+        await self._log_user(text)
+        await self._log_bot(msg)
+
+    async def _handle_add_event(self, text: str, send_fn: SendFn) -> None:
+        """Extract event details via LLM and create a Google Calendar event."""
+        if self._calendar is None:
+            await send_fn("Calendar not available — can't add events right now.")
+            return
+
+        raw = re.sub(r"^(schedule|add\s+event)\s*:\s*", "", text.strip(), flags=re.IGNORECASE)
+        if not raw:
+            await send_fn("Usage: `schedule: <description>`  e.g. `schedule: dentist tomorrow at 14:00 for 1 hour`")
+            return
+
+        now = self._clock.now()
+        now_str = now.strftime("%Y-%m-%d %H:%M (%A)")
+        ctx = await self._build_context()
+        extraction_prompt = (
+            f"Current date/time: {now_str}. Timezone: {self._config.timezone}.\n"
+            f"{self._config.user_name} wants to add a calendar event: \"{raw}\"\n\n"
+            "Extract the event details and reply with ONLY a JSON object (no markdown) with these keys:\n"
+            "  title       (string — event name)\n"
+            "  date        (string — YYYY-MM-DD)\n"
+            "  start_time  (string — HH:MM, 24h)\n"
+            "  duration_min (integer — minutes, default 60 if not specified)\n"
+            "  calendar_id (string — always \"primary\" unless user specifies another)\n"
+            "If you cannot determine a required field, set it to null."
+        )
+        raw_json = await self._llm.send(ctx, extraction_prompt)
+
+        # Strip potential markdown code fences
+        clean = re.sub(r"^```[a-z]*\n?|```$", "", raw_json.strip(), flags=re.MULTILINE).strip()
+        try:
+            fields = json.loads(clean)
+        except json.JSONDecodeError:
+            await send_fn("Couldn't parse the event details. Try: `schedule: <title> on <date> at <time> for <duration>`")
+            return
+
+        title = fields.get("title")
+        date_str = fields.get("date")
+        start_str = fields.get("start_time")
+        duration_min = fields.get("duration_min") or 60
+        calendar_id = fields.get("calendar_id") or "primary"
+
+        if not title or not date_str or not start_str:
+            missing = [f for f, v in [("title", title), ("date", date_str), ("start time", start_str)] if not v]
+            await send_fn(f"Missing: {', '.join(missing)}. Try: `schedule: <title> on <date> at <time>`")
+            return
+
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        try:
+            tz = ZoneInfo(self._config.timezone)
+            start_dt = datetime.fromisoformat(f"{date_str}T{start_str}:00").replace(tzinfo=tz)
+            end_dt = start_dt + timedelta(minutes=int(duration_min))
+        except (ValueError, TypeError) as exc:
+            await send_fn(f"Couldn't parse date/time ({exc}). Use YYYY-MM-DD and HH:MM.")
+            return
+
+        try:
+            event_id = await self._calendar.create_event(title, start_dt, end_dt, calendar_id)
+        except Exception as exc:
+            log.error("Calendar create_event failed: %s", exc)
+            await send_fn(f"Calendar write failed: {exc}")
+            return
+
+        date_label = start_dt.strftime("%A %d %b")
+        time_label = f"{start_dt.strftime('%H:%M')}–{end_dt.strftime('%H:%M')}"
+        msg = f"Added to calendar: **{title}** — {date_label} {time_label}"
         await send_fn(msg)
         await self._log_user(text)
         await self._log_bot(msg)
