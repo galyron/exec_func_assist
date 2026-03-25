@@ -12,9 +12,8 @@ services:
     restart: always
     volumes:
       - eva-joplin-data-prod:/root/.config/joplin
-    ports:
-      # On mbox, don't expose Joplin externally — bot reaches it via Docker DNS.
-      - "127.0.0.1:41184:41184"
+    ports: []
+    # No host port binding — bot reaches Joplin via Docker internal network only.
 
 volumes:
   eva-joplin-data-prod:
