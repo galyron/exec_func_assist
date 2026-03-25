@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **exec_func_assist** (EVA) is a Discord-based executive function assistant bot backed by the Claude API. It sends proactive structured check-ins, task suggestions, and energy-aware nudges throughout the day. The full spec is in `exec_function_assistant_spec_v0.3.md`. Architecture decisions are in `DECISIONS.md`. The phased build plan is in `PLAN.md`.
 
-**Implementation status:** Phases 1-A, 1-B, and 1-C are complete. The bot skeleton, connectors, context assembler, and LLM client are all working. Phase 1-D (scheduled check-ins) is next.
+**Implementation status:** Phases 1-A through 1-E are complete. The bot is fully operational: connectors, context assembler, LLM client, all scheduled handlers (C8–C11, C14), on-demand routing (C12), and follow-up scheduling (C13) are all working. Phase 2 is next.
 
 ---
 
@@ -90,9 +90,23 @@ python setup_calendar.py
 ### Data Flow
 
 ```
-JoplinConnector  ─┐
-CalendarConnector ─┤──▶  ContextAssembler  ──▶  LLMClient  ──▶  Discord
-StateManager      ─┘         (C5)               (C6)
+Discord message ──▶ EFABot._handle_message()
+                         │
+                         ├─ MorningRoutineHandler (C8)  [if active]
+                         └─ OnDemandHandler (C12)       [all other messages]
+                                  │
+                                  ├─ (LLM intents) ──▶ ContextAssembler (C5)
+                                  │                          │
+                                  │                     JoplinConnector (C3)
+                                  │                     CalendarConnector (C4)
+                                  │                     StateManager (C2)
+                                  │                          │
+                                  │                     LLMClient (C6) ──▶ Discord reply
+                                  │
+                                  └─ FollowupHandler (C13) ──▶ APScheduler date job
+
+APScheduler ──▶ Scheduler (C14) fires:
+  MorningRoutineHandler / KickoffHandler / CheckinHandler / BedtimeHandler
 ```
 
 Every LLM call: fetch tasks + events + recent interactions → assemble context string → send to Claude → post response to Discord.
@@ -117,7 +131,21 @@ Every LLM call: fetch tasks + events + recent interactions → assemble context 
 
 **`utils/clock.py` (C16)** — `Clock` abstraction. `RealClock` for production; `DebugClock` for time-simulation (configurable multiplier). **Nothing calls `datetime.now()` directly** — always use `clock.now()`.
 
-**`bot.py` (C7)** — `EFABot(discord.Client)`. Currently echoes messages (Phase 1-A stub). Will route to handlers in Phase 1-D. Both channel and DM messages go through the same `_handle_message()`.
+**`bot.py` (C7)** — `EFABot(discord.Client)`. Both channel and DM messages enter `_handle_message()`. Morning routine takes priority when active; all other messages route through `OnDemandHandler`. `_build_bot()` factory wires all handlers; `on_ready()` injects APScheduler into `FollowupHandler` after the scheduler starts (avoids circular dependency).
+
+**`handlers/base.py`** — `BaseHandler` superclass. Provides `_log_bot(msg)` and `_log_user(msg)` for interaction logging, plus the `SendFn` type alias. All handlers extend this.
+
+**`handlers/morning.py` (C8)** — Stateful multi-turn morning interview. `fire()` / `fire_retry()` for scheduled triggers; `handle_response()` for user replies; `is_active()` to check routing priority.
+
+**`handlers/kickoff.py` (C9)** — Sends the LLM-generated day briefing at `work_start`.
+
+**`handlers/checkin.py` (C10)** — Parameterised by `CheckinType` (MIDDAY / EVENING). `fire(type, send_fn)` sends LLM message + `_CheckinView` buttons. `handle_text_response()` accepts typed equivalents.
+
+**`handlers/bedtime.py` (C11)** — `fire_end_of_day()` generates an LLM micro-review from `interactions.json` (skipped if `off_today`). `fire_bedtime()` sends a fixed message (only skipped if `off_today_full_silence`).
+
+**`handlers/on_demand.py` (C12)** — Module-level `detect_intent(text) -> Intent` pure function (testable without class). `OnDemandHandler.handle()` dispatches to sub-handlers for each intent: OFF_TODAY, FINISHED, STUCK, SKIP, ADD_TASK, USE_OPUS, GENERAL. STUCK calls LLM then schedules follow-up; FINISHED cancels it.
+
+**`handlers/followup.py` (C13)** — `FollowupHandler` schedules a one-shot APScheduler `date` job 20 min after a suggestion. `set_apscheduler()` injects the scheduler post-construction. `cancel()` silently tolerates missing job or absent scheduler. Sends `_FollowupView` buttons (Done / Still working / Skipped).
 
 ### Mode Determination (weekdays)
 
