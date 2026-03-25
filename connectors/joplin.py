@@ -29,7 +29,7 @@ log = logging.getLogger(__name__)
 
 _CHECKLIST_RE = re.compile(r"^- \[( |x)\] (.+)$", re.MULTILINE)
 _INLINE_TAG_RE = re.compile(r"\[(high|low-energy|couch|easy)\]", re.IGNORECASE)
-_NOTE_FIELDS = "id,title,body,parent_id,type_,todo_completed,order,updated_time"
+_NOTE_FIELDS = "id,title,body,parent_id,is_todo,todo_completed,order,updated_time"
 _FOLDER_FIELDS = "id,title"
 
 
@@ -69,7 +69,7 @@ class JoplinConnector:
             notebook_id = note.get("parent_id", "")
             notebook = folder_map.get(notebook_id, "Unknown")
 
-            if note.get("type_") == 2:
+            if note.get("is_todo"):
                 # Standalone todo note
                 if not note.get("todo_completed"):
                     tasks.append(self._todo_to_task(note, notebook, notebook_id))
