@@ -243,7 +243,7 @@ def _build_bot(args: argparse.Namespace, config, clock: Clock) -> EFABot:
     on_demand = OnDemandHandler(
         config=config, state_manager=state, clock=clock,
         llm_client=llm, context_builder=build_context,
-        followup_handler=followup,
+        followup_handler=followup, joplin=joplin,
     )
 
     bot = EFABot(
