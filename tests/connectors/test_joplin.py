@@ -275,3 +275,123 @@ def _regular_note(id: str, title: str, parent_id: str, *, body: str) -> dict:
         "order": 0,
         "updated_time": 1700000000000,
     }
+
+
+def _make_todo_task(note_id="n1", title="Fix bug") -> "Task":
+    from connectors.models import Task
+    return Task(
+        id=note_id, note_id=note_id, title=title,
+        notebook=_NOTEBOOK, notebook_id=_FOLDER_ID,
+        tags=[], is_high_priority=False, position=0, updated_time=0,
+        is_checklist_item=False, checklist_item_text=None,
+    )
+
+
+def _make_checklist_task(note_id="n1", title="Buy milk") -> "Task":
+    from connectors.models import Task
+    return Task(
+        id=f"{note_id}:0", note_id=note_id, title=title,
+        notebook=_NOTEBOOK, notebook_id=_FOLDER_ID,
+        tags=[], is_high_priority=False, position=0, updated_time=0,
+        is_checklist_item=True, checklist_item_text=title,
+    )
+
+
+# ── mark_done: standalone todo ────────────────────────────────────────────────
+
+async def test_mark_done_todo_calls_put(connector):
+    task = _make_todo_task()
+    with patch.object(connector, "_put", new=AsyncMock(return_value={})) as mock_put:
+        result = await connector.mark_done(task)
+    assert result is True
+    mock_put.assert_called_once()
+    path, data = mock_put.call_args[0][1], mock_put.call_args[0][2]
+    assert path == f"/notes/{task.note_id}"
+    assert "todo_completed" in data
+    assert data["todo_completed"] > 0
+
+
+async def test_mark_done_todo_returns_false_on_error(connector):
+    task = _make_todo_task()
+    with patch.object(connector, "_put", new=AsyncMock(side_effect=Exception("network error"))):
+        result = await connector.mark_done(task)
+    assert result is False
+
+
+# ── mark_done: checklist item ─────────────────────────────────────────────────
+
+async def test_mark_done_checklist_patches_body(connector):
+    task = _make_checklist_task(note_id="n1", title="Buy milk")
+    note_body = "- [ ] Buy milk\n- [ ] Call dentist"
+    expected_body = "- [x] Buy milk\n- [ ] Call dentist"
+
+    with patch.object(connector, "_get", new=AsyncMock(return_value={"id": "n1", "body": note_body})), \
+         patch.object(connector, "_put", new=AsyncMock(return_value={})) as mock_put:
+        result = await connector.mark_done(task)
+
+    assert result is True
+    put_data = mock_put.call_args[0][2]
+    assert put_data["body"] == expected_body
+
+
+async def test_mark_done_checklist_item_not_found_returns_false(connector):
+    task = _make_checklist_task(note_id="n1", title="Missing item")
+    note_body = "- [ ] Buy milk\n- [ ] Call dentist"
+
+    with patch.object(connector, "_get", new=AsyncMock(return_value={"id": "n1", "body": note_body})), \
+         patch.object(connector, "_put", new=AsyncMock(return_value={})):
+        result = await connector.mark_done(task)
+
+    assert result is False
+
+
+# ── create_task ───────────────────────────────────────────────────────────────
+
+async def test_create_task_posts_to_notes(connector):
+    connector._todo_folder_id = _FOLDER_ID
+    with patch.object(connector, "_post", new=AsyncMock(return_value={"id": "new-note-id"})) as mock_post:
+        result = await connector.create_task("Write tests")
+    assert result == "new-note-id"
+    post_data = mock_post.call_args[0][2]
+    assert post_data["title"] == "Write tests"
+    assert post_data["is_todo"] == 1
+    assert post_data["parent_id"] == _FOLDER_ID
+
+
+async def test_create_task_returns_none_on_error(connector):
+    connector._todo_folder_id = _FOLDER_ID
+    with patch.object(connector, "_post", new=AsyncMock(side_effect=Exception("timeout"))):
+        result = await connector.create_task("Write tests")
+    assert result is None
+
+
+async def test_create_task_fetches_folder_if_not_cached(connector):
+    assert connector._todo_folder_id is None
+    folders = [{"id": _FOLDER_ID, "title": _NOTEBOOK}]
+    with patch.object(connector, "_get_all", new=AsyncMock(return_value=folders)), \
+         patch.object(connector, "_post", new=AsyncMock(return_value={"id": "x"})):
+        result = await connector.create_task("New task")
+    assert result == "x"
+    assert connector._todo_folder_id == _FOLDER_ID
+
+
+# ── get_tasks: new Task fields ────────────────────────────────────────────────
+
+async def test_get_tasks_todo_note_id_equals_id(connector):
+    folders = [{"id": _FOLDER_ID, "title": _NOTEBOOK}]
+    notes = [_todo_note("n1", "Fix bug", _FOLDER_ID, completed=False)]
+    with patch.object(connector, "_get_all", new=AsyncMock(side_effect=[folders, notes])):
+        tasks = await connector.get_tasks()
+    assert tasks[0].note_id == "n1"
+    assert tasks[0].is_checklist_item is False
+    assert tasks[0].checklist_item_text is None
+
+
+async def test_get_tasks_checklist_item_fields(connector):
+    folders = [{"id": _FOLDER_ID, "title": _NOTEBOOK}]
+    notes = [_regular_note("n1", "My list", _FOLDER_ID, body="- [ ] Buy milk")]
+    with patch.object(connector, "_get_all", new=AsyncMock(side_effect=[folders, notes])):
+        tasks = await connector.get_tasks()
+    assert tasks[0].note_id == "n1"
+    assert tasks[0].is_checklist_item is True
+    assert tasks[0].checklist_item_text == "Buy milk"

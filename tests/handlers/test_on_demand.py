@@ -71,6 +71,7 @@ def _make_daily(**overrides):
         "off_today": False, "off_today_full_silence": False,
         "task_queue": [], "opus_session_active": False,
         "opus_session_messages": 0, "last_suggestion": None, "last_suggestion_ts": None,
+        "last_suggested_task_id": None,
     }
     base.update(overrides)
     return base
@@ -213,9 +214,10 @@ async def test_handle_skip_does_not_call_llm(handler, llm_client):
     llm_client.send.assert_not_called()
 
 
-# ── add task ─────────────────────────────────────────────────────────────────
+# ── add task (fallback: no joplin) ───────────────────────────────────────────
 
-async def test_handle_add_task_appends_to_queue(handler, state_manager):
+async def test_handle_add_task_fallback_appends_to_queue(handler, state_manager):
+    """Without a Joplin connector, add: falls back to local queue."""
     state_manager.get_daily = AsyncMock(return_value=_make_daily(task_queue=[]))
     await handler.handle("add: buy milk", AsyncMock())
     state_manager.update_daily.assert_called_once()
@@ -224,12 +226,48 @@ async def test_handle_add_task_appends_to_queue(handler, state_manager):
     assert "buy milk" in queue[0]["title"]
 
 
-async def test_handle_add_task_sends_confirmation(handler, state_manager):
+async def test_handle_add_task_fallback_sends_confirmation(handler, state_manager):
     state_manager.get_daily = AsyncMock(return_value=_make_daily(task_queue=[]))
     send_fn = AsyncMock()
     await handler.handle("add: buy milk", send_fn)
     send_fn.assert_called_once()
     assert "buy milk" in send_fn.call_args[0][0].lower()
+
+
+# ── add task (with joplin) ────────────────────────────────────────────────────
+
+@pytest.fixture
+def joplin():
+    j = MagicMock()
+    j.create_task = AsyncMock(return_value="new-note-id")
+    j.get_tasks = AsyncMock(return_value=[])
+    j.mark_done = AsyncMock(return_value=True)
+    return j
+
+
+@pytest.fixture
+def handler_with_joplin(config, state_manager, clock, llm_client, context_builder, followup_handler, joplin):
+    return OnDemandHandler(
+        config=config, state_manager=state_manager, clock=clock,
+        llm_client=llm_client, context_builder=context_builder,
+        followup_handler=followup_handler, joplin=joplin,
+    )
+
+
+async def test_handle_add_task_calls_joplin(handler_with_joplin, joplin):
+    send_fn = AsyncMock()
+    await handler_with_joplin.handle("add: buy milk", send_fn)
+    joplin.create_task.assert_called_once_with("buy milk")
+    send_fn.assert_called_once()
+    assert "buy milk" in send_fn.call_args[0][0].lower()
+
+
+async def test_handle_add_task_joplin_failure_falls_back(handler_with_joplin, joplin, state_manager):
+    joplin.create_task = AsyncMock(return_value=None)
+    state_manager.get_daily = AsyncMock(return_value=_make_daily(task_queue=[]))
+    send_fn = AsyncMock()
+    await handler_with_joplin.handle("add: buy milk", send_fn)
+    state_manager.update_daily.assert_called_once()  # fell back to local queue
 
 
 # ── use opus ─────────────────────────────────────────────────────────────────
@@ -297,3 +335,74 @@ async def test_handle_general_sends_llm_response(handler):
     send_fn = AsyncMock()
     await handler.handle("what should I work on?", send_fn)
     send_fn.assert_called_once_with("Here is a suggestion.")
+
+
+# ── detect_intent: DONE_TASK ──────────────────────────────────────────────────
+
+def test_intent_done_task_colon():
+    assert detect_intent("done: fix login bug") == Intent.DONE_TASK
+
+def test_intent_done_task_colon_spaced():
+    assert detect_intent("done : send the email") == Intent.DONE_TASK
+
+def test_intent_done_plain_is_finished():
+    assert detect_intent("done") == Intent.FINISHED
+
+def test_intent_done_i_finished_is_finished():
+    assert detect_intent("I finished the report") == Intent.FINISHED
+
+
+# ── done: <task> handler ──────────────────────────────────────────────────────
+
+def _make_task(id="t1", title="Fix bug"):
+    from connectors.models import Task
+    return Task(
+        id=id, note_id=id, title=title, notebook="00_TODO", notebook_id="f1",
+        tags=[], is_high_priority=False, position=0, updated_time=0,
+        is_checklist_item=False, checklist_item_text=None,
+    )
+
+
+async def test_handle_done_task_marks_joplin_done(handler_with_joplin, joplin, llm_client):
+    task = _make_task(id="t1", title="Fix login bug")
+    joplin.get_tasks = AsyncMock(return_value=[task])
+    llm_client.send = AsyncMock(return_value="t1")
+    send_fn = AsyncMock()
+    await handler_with_joplin.handle("done: fix login bug", send_fn)
+    joplin.mark_done.assert_called_once_with(task)
+    assert "fix login bug" in send_fn.call_args[0][0].lower()
+
+
+async def test_handle_done_task_no_match_sends_error(handler_with_joplin, joplin, llm_client):
+    task = _make_task(id="t1", title="Unrelated task")
+    joplin.get_tasks = AsyncMock(return_value=[task])
+    llm_client.send = AsyncMock(return_value="NO_MATCH")
+    send_fn = AsyncMock()
+    await handler_with_joplin.handle("done: something else", send_fn)
+    joplin.mark_done.assert_not_called()
+    assert send_fn.call_args[0][0]  # some error message was sent
+
+
+async def test_handle_done_task_no_joplin_sends_error(handler):
+    send_fn = AsyncMock()
+    await handler.handle("done: fix login bug", send_fn)
+    send_fn.assert_called_once()
+    assert "not available" in send_fn.call_args[0][0].lower()
+
+
+# ── finished: auto-complete last suggested task ───────────────────────────────
+
+async def test_handle_finished_auto_marks_done(handler_with_joplin, joplin, state_manager):
+    task = _make_task(id="t1", title="Fix login bug")
+    joplin.get_tasks = AsyncMock(return_value=[task])
+    state_manager.get_daily = AsyncMock(return_value=_make_daily(last_suggested_task_id="t1"))
+    send_fn = AsyncMock()
+    await handler_with_joplin.handle("done", send_fn)
+    joplin.mark_done.assert_called_once_with(task)
+    assert "fix login bug" in send_fn.call_args[0][0].lower()
+
+
+async def test_handle_finished_no_task_id_skips_joplin(handler_with_joplin, joplin, state_manager):
+    state_manager.get_daily = AsyncMock(return_value=_make_daily(last_suggested_task_id=None))
+    await handler_with_joplin.handle("done", AsyncMock())
+    joplin.mark_done.assert_not_called()
