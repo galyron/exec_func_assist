@@ -13,7 +13,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Remaining gaps before Phase 2:**
 - Joplin + Calendar background polling jobs are described in C14 but not yet added to `scheduler.py` (connectors are currently called on-demand per LLM request only).
 - C17 (Cost Tracker): spend tracking and cap enforcement are in `llm/client.py`, but Discord warning messages at 80% and 100% cap are not yet sent.
-- `deploy.sh` is referenced in the plan but may not exist yet.
 - Debug mode enhancements planned (print LLM payloads, suppress @mentions) are not implemented.
 
 ---
@@ -87,7 +86,7 @@ python setup_calendar.py
 
 **Joplin network note:** Joplin's REST API only binds to `127.0.0.1` inside its container. The entrypoint runs Joplin on internal port 41185 and uses `socat` to forward `0.0.0.0:41184 → 127.0.0.1:41185` so the bot can reach it via Docker DNS (`http://joplin:41184`).
 
-**Prod deploy:** `./deploy.sh` → SSH to mbox (192.168.178.24) → `git pull && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`.
+**Prod deploy:** `./deploy.sh` → SSH to mbox (`~/services/exec_func_assist`) → `git pull && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build`. The prod override sets `restart: always` and removes host port binding for Joplin (bot reaches it via Docker DNS `http://joplin:41184`).
 
 ---
 
@@ -125,11 +124,11 @@ Every LLM call: fetch tasks + events + recent interactions → assemble context 
 
 **`connectors/models.py`** — Shared output types: `Task`, `CalendarEvent`, `FreeWindow`. These are the contract between connectors and `ContextAssembler`. New calendar sources only need to produce these types.
 
-**`connectors/joplin.py` (C3)** — Reads all notes via Joplin REST API with pagination. Two task sources: standalone todo notes (`is_todo=1`) and unchecked checklist items in regular note bodies. Extracts inline tags `[high]`, `[low-energy]`, `[couch]`, `[easy]`. Returns `[]` on failure (graceful degradation).
+**`connectors/joplin.py` (C3)** — Reads notes from the configured `todo_notebook` (default `00_TODO`) via Joplin REST API with pagination. Two task sources: standalone todo notes (`is_todo=1`) and unchecked checklist items in regular note bodies. Tags are extracted via `_TAG_RULES` — a list of `(compiled_regex, canonical_tag)` pairs that match natural language in note titles (e.g. "by EOD" → `[today]`, "asap" → `[urgent]`). Returns `[]` on failure (graceful degradation).
 
 **`connectors/calendar.py` (C4)** — Enumerates all selected calendars via `calendarList.list` (not just `primary`). Fetches events per calendar. Pure function `compute_free_windows()` computes free time slots. Excluded calendars configured via `excluded_calendar_ids` in `config.json`.
 
-**`context/assembler.py` (C5)** — Pure functions `determine_mode()` and `determine_energy()` are module-level (testable without class). `ContextAssembler.assemble()` takes pre-fetched data and returns `AssembledContext` with a formatted `text` field ready for the LLM.
+**`context/assembler.py` (C5)** — Pure functions `determine_mode()` and `determine_energy()` are module-level (testable without class). `ContextAssembler.assemble()` takes pre-fetched data and returns `AssembledContext` with a formatted `text` field ready for the LLM. Timed calendar events are labelled `[past]`, `[now]`, or `[upcoming]` relative to `clock.now()` so the LLM cannot confuse an event's start time with the current time.
 
 **`llm/client.py` (C6)** — `LLMClient.send()` selects Sonnet/Opus based on session state, prepends the context string to the user message, tracks monthly spend in `state.json`, enforces `monthly_cost_limit_usd`. Opus auto-reverts after `opus_session_max_messages`.
 
@@ -149,7 +148,9 @@ Every LLM call: fetch tasks + events + recent interactions → assemble context 
 
 **`handlers/bedtime.py` (C11)** — `fire_end_of_day()` generates an LLM micro-review from `interactions.json` (skipped if `off_today`). `fire_bedtime()` sends a fixed message (only skipped if `off_today_full_silence`).
 
-**`handlers/on_demand.py` (C12)** — Module-level `detect_intent(text) -> Intent` pure function (testable without class). `OnDemandHandler.handle()` dispatches to sub-handlers for each intent: OFF_TODAY, FINISHED, STUCK, SKIP, ADD_TASK, USE_OPUS, GENERAL. STUCK calls LLM then schedules follow-up; FINISHED cancels it.
+**`handlers/on_demand.py` (C12)** — Module-level `detect_intent(text) -> Intent` pure function (testable without class). `OnDemandHandler.handle()` dispatches to sub-handlers for each intent: OFF_TODAY, FINISHED, STUCK, SKIP, ADD_TASK, USE_OPUS, TRIGGER, GENERAL. STUCK calls LLM then schedules follow-up; FINISHED cancels it. TRIGGER (`!morning`, `!evening`, etc.) calls `Scheduler.trigger(job, send_fn)` — `send_fn` is passed through so the routine replies to wherever the command came from (DM or channel). `set_scheduler()` is called post-construction to avoid a circular dependency.
+
+**`scheduler.py` (C14)** — Registers all APScheduler cron jobs. All jobs: `coalesce=True`, `max_instances=1`, `misfire_grace_time=300`. Weekend suppression is via `day_of_week` on the trigger, not runtime checks. `Scheduler.trigger(name, send_fn=None)` fires any named job manually — if `send_fn` is provided the routine sends there (e.g. DM reply); otherwise falls back to `_get_channel_send()`.
 
 **`handlers/followup.py` (C13)** — `FollowupHandler` schedules a one-shot APScheduler `date` job 20 min after a suggestion. `set_apscheduler()` injects the scheduler post-construction. `cancel()` silently tolerates missing job or absent scheduler. Sends `_FollowupView` buttons (Done / Still working / Skipped).
 
