@@ -8,7 +8,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **exec_func_assist** (EVA) is a Discord-based executive function assistant bot backed by the Claude API. It sends proactive structured check-ins, task suggestions, and energy-aware nudges throughout the day. The full spec is in `exec_function_assistant_spec_v0.3.md`. Architecture decisions are in `DECISIONS.md`. The phased build plan is in `PLAN.md`.
 
-**Implementation status:** Phases 1-A through 1-E are complete. The bot is fully operational: connectors, context assembler, LLM client, all scheduled handlers (C8–C11, C14), on-demand routing (C12), and follow-up scheduling (C13) are all working. Phase 2 is next.
+**Implementation status:** Phases 1-A through 1-E are complete. The bot is fully operational: connectors, context assembler, LLM client, all scheduled handlers (C8–C11, C14), on-demand routing (C12), and follow-up scheduling (C13) are all working.
+
+**Remaining gaps before Phase 2:**
+- Joplin + Calendar background polling jobs are described in C14 but not yet added to `scheduler.py` (connectors are currently called on-demand per LLM request only).
+- C17 (Cost Tracker): spend tracking and cap enforcement are in `llm/client.py`, but Discord warning messages at 80% and 100% cap are not yet sent.
+- `deploy.sh` is referenced in the plan but may not exist yet.
+- Debug mode enhancements planned (print LLM payloads, suppress @mentions) are not implemented.
 
 ---
 
@@ -113,7 +119,7 @@ Every LLM call: fetch tasks + events + recent interactions → assemble context 
 
 ### Key Modules
 
-**`config.py` (C1)** — Frozen `Config` dataclass. Loads secrets from `.env`, settings from `config.json`. Raises `ConfigError` on missing values. `config.json` is committed (no secrets); `.env` is gitignored.
+**`config.py` (C1)** — Frozen `Config` dataclass. Loads secrets from `.env`, settings from `config.json`. Raises `ConfigError` on missing values. `config.json` is committed (no secrets); `.env` is gitignored. Notable optional field: `security_alerts_channel_id` (Discord channel for unauthorized-message alerts; `null` = log-only).
 
 **`state/manager.py` (C2)** — `StateManager`: async read/write for three JSON files. Writes are atomic (`.tmp` → rename). Handles daily rollover (archives `daily` → `previous_daily` on date change). Key methods: `get_daily()`, `update_daily(**kwargs)`, `append_interaction()`, `get_recent_interactions(n)`, `has_previous_daily()`.
 
@@ -131,7 +137,7 @@ Every LLM call: fetch tasks + events + recent interactions → assemble context 
 
 **`utils/clock.py` (C16)** — `Clock` abstraction. `RealClock` for production; `DebugClock` for time-simulation (configurable multiplier). **Nothing calls `datetime.now()` directly** — always use `clock.now()`.
 
-**`bot.py` (C7)** — `EFABot(discord.Client)`. Both channel and DM messages enter `_handle_message()`. Morning routine takes priority when active; all other messages route through `OnDemandHandler`. `_build_bot()` factory wires all handlers; `on_ready()` injects APScheduler into `FollowupHandler` after the scheduler starts (avoids circular dependency).
+**`bot.py` (C7)** — `EFABot(discord.Client)`. Both channel and DM messages enter `_handle_message()`. Morning routine takes priority when active; all other messages route through `OnDemandHandler`. `_build_bot()` factory wires all handlers; `on_ready()` injects APScheduler into `FollowupHandler` after the scheduler starts (avoids circular dependency). `on_message` enforces `discord_user_id` — all other authors are silently dropped and optionally reported to `security_alerts_channel_id` via `_alert_unauthorized()`.
 
 **`handlers/base.py`** — `BaseHandler` superclass. Provides `_log_bot(msg)` and `_log_user(msg)` for interaction logging, plus the `SendFn` type alias. All handlers extend this.
 
