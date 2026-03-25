@@ -220,6 +220,17 @@ Multiple tags on one task are fine: *"Fix login bug urgent/today"* → `[today]`
 | `<USE_OPUS>` | Switches to claude-opus-4-6 for the session |
 | anything else | General LLM response in current mode |
 
+**Manual routine triggers** — fire any scheduled routine on demand:
+
+| Command | Fires |
+|---------|-------|
+| `!morning` | Morning interview |
+| `!kickoff` | Day briefing |
+| `!midday` | Midday check-in |
+| `!evening` | Evening check-in |
+| `!eod` | End-of-day review |
+| `!bedtime` | Bedtime reminder |
+
 ---
 
 ## Repository layout
