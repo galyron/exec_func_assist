@@ -24,7 +24,10 @@ from connectors.models import CalendarEvent, FreeWindow
 
 log = logging.getLogger(__name__)
 
-_SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+_SCOPES = [
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+]
 _DEFAULT_TOKEN_PATH = Path("secrets/google_token.json")
 
 

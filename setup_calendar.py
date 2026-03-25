@@ -22,7 +22,10 @@ from pathlib import Path
 
 CLIENT_SECRET_PATH = Path("secrets/google_client_secret.json")
 TOKEN_PATH = Path("secrets/google_token.json")
-SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"]
+SCOPES = [
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/calendar.events",
+]
 
 
 def main() -> None:
@@ -50,7 +53,7 @@ def main() -> None:
             sys.exit(0)
 
     print("Opening browser for Google OAuth2 consent...")
-    print(f"Scope requested: {SCOPES[0]}")
+    print(f"Scopes requested: {', '.join(SCOPES)}")
     print()
 
     flow = InstalledAppFlow.from_client_secrets_file(str(CLIENT_SECRET_PATH), SCOPES)

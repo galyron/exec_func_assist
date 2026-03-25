@@ -82,6 +82,14 @@ python3 -m venv .venv-setup
 
 The venv is throwaway — you can delete it after. `secrets/google_token.json` is gitignored; copy it to mbox manually (see the prod deploy section below).
 
+**Re-auth required after scope changes** (e.g. adding calendar write access): delete `secrets/google_token.json`, re-run the above, and copy the new token to mbox.
+
+```sh
+rm secrets/google_token.json
+.venv-setup/bin/python setup_calendar.py
+scp secrets/google_token.json gabriell@192.168.178.24:~/services/exec_func_assist/secrets/
+```
+
 To see which calendars are visible and exclude any unwanted ones:
 
 ```sh
