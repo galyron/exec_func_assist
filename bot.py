@@ -118,6 +118,7 @@ class EFABot(discord.Client):
         )
         self._scheduler.start()
         self.followup_handler.set_apscheduler(self._scheduler._scheduler)
+        self.on_demand_handler.set_scheduler(self._scheduler)
 
     async def close(self) -> None:
         if self._scheduler:

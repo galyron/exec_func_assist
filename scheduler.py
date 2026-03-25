@@ -67,6 +67,27 @@ class Scheduler:
         self._scheduler.shutdown(wait=False)
         log.info("Scheduler stopped.")
 
+    async def trigger(self, name: str) -> bool:
+        """Manually fire a named job. Returns True if the name was recognised.
+
+        Valid names: morning, retry, kickoff, midday, evening, eod, bedtime.
+        """
+        jobs: dict[str, Callable] = {
+            "morning":  self._fire_morning,
+            "retry":    self._fire_morning_retry,
+            "kickoff":  self._fire_kickoff,
+            "midday":   self._fire_midday,
+            "evening":  self._fire_evening,
+            "eod":      self._fire_end_of_day,
+            "bedtime":  self._fire_bedtime,
+        }
+        fn = jobs.get(name)
+        if fn is None:
+            return False
+        log.info("Manual trigger: %s", name)
+        await fn()
+        return True
+
     # ── Job registration ──────────────────────────────────────────────────────
 
     def _register_jobs(self) -> None:

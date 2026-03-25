@@ -52,6 +52,15 @@ def test_intent_use_opus_lowercase():
 def test_intent_general_fallback():
     assert detect_intent("how does the calendar look?") == Intent.GENERAL
 
+def test_intent_trigger_morning():
+    assert detect_intent("!morning") == Intent.TRIGGER
+
+def test_intent_trigger_evening():
+    assert detect_intent("!evening") == Intent.TRIGGER
+
+def test_intent_trigger_any_exclamation():
+    assert detect_intent("!bedtime") == Intent.TRIGGER
+
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -244,6 +253,43 @@ async def test_handle_use_opus_sends_confirmation(handler):
 async def test_handle_general_calls_llm(handler, llm_client):
     await handler.handle("what should I work on?", AsyncMock())
     llm_client.send.assert_called_once()
+
+
+# ── trigger ───────────────────────────────────────────────────────────────────
+
+@pytest.fixture
+def scheduler():
+    s = MagicMock()
+    s.trigger = AsyncMock(return_value=True)
+    return s
+
+
+async def test_handle_trigger_calls_scheduler(handler, scheduler):
+    handler.set_scheduler(scheduler)
+    await handler.handle("!evening", AsyncMock())
+    scheduler.trigger.assert_called_once_with("evening")
+
+
+async def test_handle_trigger_sends_ack(handler, scheduler):
+    handler.set_scheduler(scheduler)
+    send_fn = AsyncMock()
+    await handler.handle("!morning", send_fn)
+    send_fn.assert_called_once()
+
+
+async def test_handle_trigger_unknown_name(handler, scheduler):
+    handler.set_scheduler(scheduler)
+    send_fn = AsyncMock()
+    await handler.handle("!foobar", send_fn)
+    scheduler.trigger.assert_not_called()
+    assert "unknown" in send_fn.call_args[0][0].lower()
+
+
+async def test_handle_trigger_no_scheduler(handler):
+    send_fn = AsyncMock()
+    await handler.handle("!evening", send_fn)
+    send_fn.assert_called_once()
+    assert "not ready" in send_fn.call_args[0][0].lower()
 
 
 async def test_handle_general_sends_llm_response(handler):

@@ -20,6 +20,7 @@ from utils.clock import Clock
 
 if TYPE_CHECKING:
     from handlers.followup import FollowupHandler
+    from scheduler import Scheduler
 
 log = logging.getLogger(__name__)
 
@@ -31,7 +32,22 @@ class Intent(str, Enum):
     SKIP = "skip"
     ADD_TASK = "add_task"
     USE_OPUS = "use_opus"
+    TRIGGER = "trigger"
     GENERAL = "general"
+
+
+_TRIGGER_ALIASES: dict[str, str] = {
+    "morning":      "morning",
+    "retry":        "retry",
+    "morning retry":"retry",
+    "kickoff":      "kickoff",
+    "kick off":     "kickoff",
+    "midday":       "midday",
+    "evening":      "evening",
+    "eod":          "eod",
+    "end of day":   "eod",
+    "bedtime":      "bedtime",
+}
 
 
 # ── Pure intent detection (module-level for easy testing) ─────────────────────
@@ -39,6 +55,9 @@ class Intent(str, Enum):
 def detect_intent(text: str) -> Intent:
     """Classify a user message into an Intent without side effects."""
     lower = text.lower().strip()
+
+    if lower.startswith("!"):
+        return Intent.TRIGGER
 
     if re.search(r"<use_opus>", lower):
         return Intent.USE_OPUS
@@ -88,13 +107,20 @@ class OnDemandHandler(BaseHandler):
         self._llm = llm_client
         self._build_context = context_builder
         self._followup = followup_handler
+        self._scheduler: Scheduler | None = None
+
+    def set_scheduler(self, scheduler: Scheduler) -> None:
+        """Inject the Scheduler after creation (avoids circular dependency)."""
+        self._scheduler = scheduler
 
     async def handle(self, text: str, send_fn: SendFn) -> None:
         """Dispatch text to the correct sub-handler based on intent."""
         intent = detect_intent(text)
         log.debug("OnDemandHandler: intent=%s text=%r", intent, text[:80])
 
-        if intent == Intent.OFF_TODAY:
+        if intent == Intent.TRIGGER:
+            await self._handle_trigger(text, send_fn)
+        elif intent == Intent.OFF_TODAY:
             await self._handle_off_today(text, send_fn)
         elif intent == Intent.FINISHED:
             await self._handle_finished(text, send_fn)
@@ -110,6 +136,19 @@ class OnDemandHandler(BaseHandler):
             await self._handle_general(text, send_fn)
 
     # ── Intent sub-handlers ───────────────────────────────────────────────────
+
+    async def _handle_trigger(self, text: str, send_fn: SendFn) -> None:
+        name = text.strip().lstrip("!").strip().lower()
+        job = _TRIGGER_ALIASES.get(name)
+        if job is None:
+            available = ", ".join(f"`!{k}`" for k in _TRIGGER_ALIASES if k == _TRIGGER_ALIASES[k])
+            await send_fn(f"Unknown trigger `!{name}`. Available: {available}")
+            return
+        if self._scheduler is None:
+            await send_fn("Scheduler not ready yet — try again in a moment.")
+            return
+        await send_fn(f"Triggering `{job}`...")
+        await self._scheduler.trigger(job)
 
     async def _handle_off_today(self, text: str, send_fn: SendFn) -> None:
         full_silence = "full silence" in text.lower()
