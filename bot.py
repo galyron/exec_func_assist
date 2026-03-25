@@ -234,7 +234,7 @@ def _build_bot(args: argparse.Namespace, config, clock: Clock) -> EFABot:
     )
     bedtime = BedtimeHandler(
         config=config, state_manager=state, clock=clock,
-        llm_client=llm, context_builder=build_context,
+        llm_client=llm, context_builder=build_context, calendar=calendar,
     )
     followup = FollowupHandler(
         config=config, state_manager=state, clock=clock,
