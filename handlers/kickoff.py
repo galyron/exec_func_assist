@@ -49,7 +49,7 @@ class KickoffHandler(BaseHandler):
             return
 
         ctx = await self._build_context()
-        now_str = self._clock.now().strftime("%H:%M")
+        now_str = self._clock.now().strftime("%A %Y-%m-%d %H:%M")
         trigger = (
             f"It is {now_str}. Generate the day kick-off message for {self._config.user_name}. "
             "Include: a one-line calendar summary, the key free windows, "

@@ -151,7 +151,7 @@ class Scheduler:
             id=job_id,
             coalesce=True,
             max_instances=1,
-            misfire_grace_time=300,  # fire up to 5 min late rather than skip
+            misfire_grace_time=60,   # fire up to 1 min late; keeps restart-replay window small
         )
         log.debug("Registered job: %s  trigger: %s", job_id, trigger)
 

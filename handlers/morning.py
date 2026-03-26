@@ -89,16 +89,24 @@ class MorningRoutineHandler(BaseHandler):
         await self._log_bot(greeting)
 
     async def fire_retry(self, send_fn: SendFn) -> None:
-        """Send a gentle nudge if no response to the morning routine yet."""
+        """Nudge if morning routine hasn't been completed yet.
+
+        Sends at most once per day — the morning_retry_sent flag prevents
+        duplicate fires caused by bot restarts within the misfire grace window.
+        """
         daily = await self._state.get_daily()
         if daily["morning_complete"] or daily["off_today"]:
             return
+        if daily.get("morning_retry_sent"):
+            return  # already sent today — do not spam on restart
 
         msg = (
-            f"{self._config.user_name} — morning check-in is waiting. "
-            "Every minute you delay is momentum you won't get back today."
+            f"{self._config.user_name} — the morning check-in is still open. "
+            "Every hour you skip it is an hour you operate without a plan. "
+            "Answer now: how's your energy? (high / medium / low)"
         )
         await send_fn(msg)
+        await self._state.update_daily(morning_retry_sent=True)
         await self._log_bot(msg)
 
     # ── Interactive entry point ───────────────────────────────────────────────
@@ -138,8 +146,9 @@ class MorningRoutineHandler(BaseHandler):
 
         if last_asked == "blockers":
             ctx = await self._build_context()
+            now_str = self._clock.now().strftime("%A %Y-%m-%d %H:%M")
             trigger = (
-                f"{self._config.user_name} has completed the morning check-in. "
+                f"It is {now_str}. {self._config.user_name} has completed the morning check-in. "
                 "Generate a sharp 2–3 sentence day-plan based on what they shared: "
                 "the priority, the first action, and what stands between them and a good day. "
                 "No fluff. Make it sound like a plan that will actually happen."

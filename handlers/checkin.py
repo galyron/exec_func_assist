@@ -61,7 +61,7 @@ class CheckinHandler(BaseHandler):
             return
 
         ctx = await self._build_context()
-        now_str = self._clock.now().strftime("%H:%M")
+        now_str = self._clock.now().strftime("%A %Y-%m-%d %H:%M")
 
         if checkin_type == CheckinType.MIDDAY:
             trigger = (

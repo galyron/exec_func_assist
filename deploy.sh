@@ -15,6 +15,8 @@ ssh "${MBOX_USER}@${MBOX_HOST}" bash <<'EOF'
   cd ~/services/exec_func_assist
   echo "  pulling latest code..."
   git pull --ff-only
+  echo "  stopping old bot container before rebuild..."
+  docker compose -f docker-compose.yml -f docker-compose.prod.yml stop eva-bot-prod || true
   echo "  rebuilding and restarting containers..."
   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
   echo "  done."
