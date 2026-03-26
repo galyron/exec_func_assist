@@ -105,10 +105,10 @@ class CheckinHandler(BaseHandler):
     async def _handle_struggling(self, send_fn: SendFn) -> None:
         ctx = await self._build_context()
         trigger = (
-            f"{self._config.user_name} says they're struggling. "
-            "Name what is specifically blocking them. "
-            "Give the single smallest physical action that breaks the freeze. "
-            "Direct and brief — no comfort, no padding."
+            f"{self._config.user_name} clicked 'I'm struggling'. "
+            "Based on context (current tasks, recent exchanges), assume the most likely blocker "
+            "and give the single smallest physical action that breaks the freeze — on that specific task. "
+            "Do not ask what's wrong. Do not suggest a different task. Under 60 words."
         )
         response = await self._llm.send(ctx, trigger)
         await send_fn(response)
