@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Awaitable, Callable, Optional
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -55,7 +56,8 @@ class Scheduler:
         self._kickoff = kickoff_handler
         self._checkin = checkin_handler
         self._bedtime = bedtime_handler
-        self._scheduler = AsyncIOScheduler(timezone=config.timezone)
+        self._tz = ZoneInfo(config.timezone)
+        self._scheduler = AsyncIOScheduler(timezone=self._tz)
 
     def start(self) -> None:
         """Register all jobs and start the scheduler."""
@@ -101,47 +103,49 @@ class Scheduler:
     def _register_jobs(self) -> None:
         cfg = self._config
 
+        tz = self._tz
+
         # Morning routine — weekdays only
         h, m = _hhmm(cfg.morning_routine)
         self._add("morning_routine",
-                  CronTrigger(hour=h, minute=m, day_of_week="mon-fri"),
+                  CronTrigger(hour=h, minute=m, day_of_week="mon-fri", timezone=tz),
                   self._fire_morning)
 
         # Morning retry — weekdays only, N minutes after morning_routine
         rh, rm = _add_minutes(h, m, cfg.morning_routine_retry_window_min)
         self._add("morning_retry",
-                  CronTrigger(hour=rh, minute=rm, day_of_week="mon-fri"),
+                  CronTrigger(hour=rh, minute=rm, day_of_week="mon-fri", timezone=tz),
                   self._fire_morning_retry)
 
         # Day kick-off — weekdays only
         h, m = _hhmm(cfg.work_start)
         self._add("day_kickoff",
-                  CronTrigger(hour=h, minute=m, day_of_week="mon-fri"),
+                  CronTrigger(hour=h, minute=m, day_of_week="mon-fri", timezone=tz),
                   self._fire_kickoff)
 
         # Midday check-in — weekdays only
         h, m = _hhmm(cfg.midday_checkin)
         self._add("midday_checkin",
-                  CronTrigger(hour=h, minute=m, day_of_week="mon-fri"),
+                  CronTrigger(hour=h, minute=m, day_of_week="mon-fri", timezone=tz),
                   self._fire_midday)
 
         # Evening check-in — every day if weekend nudge enabled, else weekdays
         h, m = _hhmm(cfg.evening_start)
         dow = "mon-sun" if cfg.weekend_evening_nudge else "mon-fri"
         self._add("evening_checkin",
-                  CronTrigger(hour=h, minute=m, day_of_week=dow),
+                  CronTrigger(hour=h, minute=m, day_of_week=dow, timezone=tz),
                   self._fire_evening)
 
         # End-of-day review — every day
         h, m = _hhmm(cfg.end_of_day_review)
         self._add("end_of_day",
-                  CronTrigger(hour=h, minute=m, day_of_week="mon-sun"),
+                  CronTrigger(hour=h, minute=m, day_of_week="mon-sun", timezone=tz),
                   self._fire_end_of_day)
 
         # Bedtime reminder — every day (exempt from off_today suppression)
         h, m = _hhmm(cfg.bedtime)
         self._add("bedtime",
-                  CronTrigger(hour=h, minute=m, day_of_week="mon-sun"),
+                  CronTrigger(hour=h, minute=m, day_of_week="mon-sun", timezone=tz),
                   self._fire_bedtime)
 
     def _add(self, job_id: str, trigger: CronTrigger, func: Callable) -> None:
