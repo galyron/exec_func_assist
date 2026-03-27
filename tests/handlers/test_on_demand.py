@@ -1,7 +1,7 @@
 """Tests for C12 — On-Demand Handler."""
 
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -71,7 +71,7 @@ def _make_daily(**overrides):
         "off_today": False, "off_today_full_silence": False,
         "task_queue": [], "opus_session_active": False,
         "opus_session_messages": 0, "last_suggestion": None, "last_suggestion_ts": None,
-        "last_suggested_task_id": None,
+        "last_suggested_task_id": None, "commitment_minutes": None,
     }
     base.update(overrides)
     return base
@@ -193,15 +193,22 @@ async def test_handle_stuck_calls_llm(handler, llm_client):
     llm_client.send.assert_called_once()
 
 
-async def test_handle_stuck_schedules_followup(handler, followup_handler):
-    await handler.handle("I'm stuck", AsyncMock())
-    followup_handler.schedule.assert_called_once()
+async def test_handle_stuck_shows_timer_picker(handler, followup_handler):
+    """After stuck response, EVA should show a timer picker instead of auto-scheduling."""
+    send_fn = AsyncMock()
+    await handler.handle("I'm stuck", send_fn)
+    # send_fn called twice: LLM response + timer picker prompt
+    assert send_fn.call_count == 2
+    # Second call should have a view argument (TimerPickerView)
+    second_call_kwargs = send_fn.call_args_list[1][1]
+    assert "view" in second_call_kwargs
 
 
 async def test_handle_stuck_sends_response(handler):
     send_fn = AsyncMock()
     await handler.handle("I'm stuck", send_fn)
-    send_fn.assert_called_once_with("Here is a suggestion.")
+    # First call is the LLM suggestion
+    assert send_fn.call_args_list[0][0][0] == "Here is a suggestion."
 
 
 # ── skip ─────────────────────────────────────────────────────────────────────
@@ -519,3 +526,62 @@ async def test_handle_add_event_markdown_json_stripped(handler_with_calendar, ca
     send_fn = AsyncMock()
     await handler_with_calendar.handle("schedule: dentist", send_fn)
     calendar.create_event.assert_called_once()
+
+
+# ── detect_intent: COMMIT ─────────────────────────────────────────────────────
+
+def test_detect_intent_commit_i_need():
+    assert detect_intent("I need 17 minutes to finish the report") == Intent.COMMIT
+
+def test_detect_intent_commit_give_me():
+    assert detect_intent("give me 20 min") == Intent.COMMIT
+
+def test_detect_intent_commit_starts_with_number():
+    assert detect_intent("17 min") == Intent.COMMIT
+
+def test_detect_intent_commit_with_commit_prefix():
+    assert detect_intent("commit: 25 mins for the Schilling prep") == Intent.COMMIT
+
+def test_detect_intent_commit_not_triggered_by_done():
+    # "done" should take priority
+    assert detect_intent("done: the report") != Intent.COMMIT
+
+
+# ── _handle_commit ────────────────────────────────────────────────────────────
+
+async def test_handle_commit_schedules_timer(handler, state_manager, followup_handler):
+    """User commits to a specific duration — followup should be scheduled."""
+    send_fn = AsyncMock()
+    with patch.object(followup_handler, "schedule", new=AsyncMock()) as mock_schedule:
+        await handler.handle("I need 17 minutes to finish the report", send_fn)
+    mock_schedule.assert_called_once()
+    args = mock_schedule.call_args
+    assert args[1]["minutes"] == 17
+
+
+async def test_handle_commit_extracts_task(handler, state_manager, followup_handler):
+    send_fn = AsyncMock()
+    with patch.object(followup_handler, "schedule", new=AsyncMock()) as mock_schedule:
+        await handler.handle("I need 20 minutes to finish the Schilling prep", send_fn)
+    call_args = mock_schedule.call_args
+    task = call_args[0][0]  # first positional arg is the task/suggestion
+    assert "Schilling" in task
+
+
+async def test_handle_commit_falls_back_to_last_suggestion(handler, state_manager, followup_handler):
+    state_manager.get_daily = AsyncMock(return_value=_make_daily(
+        last_suggestion="Write the proposal"
+    ))
+    send_fn = AsyncMock()
+    with patch.object(followup_handler, "schedule", new=AsyncMock()) as mock_schedule:
+        await handler.handle("17 min", send_fn)
+    call_args = mock_schedule.call_args
+    task = call_args[0][0]
+    assert "proposal" in task.lower()
+
+
+async def test_handle_commit_rejects_out_of_range(handler, followup_handler):
+    send_fn = AsyncMock()
+    await handler.handle("I need 500 minutes", send_fn)
+    msg = send_fn.call_args[0][0]
+    assert "240" in msg or "between" in msg.lower()

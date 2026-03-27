@@ -27,6 +27,7 @@ from config import Config
 from context.assembler import AssembledContext, Mode
 from llm.prompts import get_system_prompt
 from state.manager import StateManager
+from state.models import Interaction
 
 log = logging.getLogger(__name__)
 
@@ -82,8 +83,11 @@ class LLMClient:
             return _FALLBACK_MESSAGE
 
         model = self._select_model(state)
-        system = system_override or get_system_prompt(context.mode)
-        full_message = f"{context.text}\n\n---\n\n{user_message}"
+        system_base = system_override or get_system_prompt(context.mode)
+        # Inject current state (tasks, calendar, mode) into the system prompt so it
+        # is present throughout the conversation, not just in the first user turn.
+        system = f"{system_base}\n\n{context.text}"
+        messages = _build_messages(context.recent_interactions, user_message)
 
         try:
             response = await asyncio.to_thread(
@@ -91,7 +95,7 @@ class LLMClient:
                 model=model,
                 max_tokens=1024,
                 system=system,
-                messages=[{"role": "user", "content": full_message}],
+                messages=messages,
             )
         except Exception as exc:
             log.error("LLM call failed: %s", exc)
@@ -149,6 +153,42 @@ class LLMClient:
             log.info("Opus session ended after %d messages — reverted to Sonnet.", count)
         else:
             await self._state.update_daily(opus_session_messages=count)
+
+
+# ── Message construction ──────────────────────────────────────────────────────
+
+def _build_messages(interactions: list[Interaction], user_message: str) -> list[dict]:
+    """Build alternating API message turns from interaction history + current trigger.
+
+    The Anthropic API requires strict user/assistant alternation, starting and
+    ending with "user". Consecutive same-role interactions are merged.
+    """
+    if not interactions:
+        return [{"role": "user", "content": user_message}]
+
+    turns: list[dict] = []
+    for ix in interactions:
+        role = "assistant" if ix["direction"] == "bot" else "user"
+        if turns and turns[-1]["role"] == role:
+            turns[-1]["content"] += "\n" + ix["content"]
+        else:
+            turns.append({"role": role, "content": ix["content"]})
+
+    # API requires first message to be "user" — drop leading assistant turns
+    while turns and turns[0]["role"] != "user":
+        turns.pop(0)
+
+    if not turns:
+        return [{"role": "user", "content": user_message}]
+
+    # Append current trigger as final "user" turn
+    if turns[-1]["role"] == "user":
+        # Last turn is already user — merge so we don't create consecutive user messages
+        turns[-1]["content"] += f"\n\n{user_message}"
+    else:
+        turns.append({"role": "user", "content": user_message})
+
+    return turns
 
 
 # ── Standalone verification ───────────────────────────────────────────────────

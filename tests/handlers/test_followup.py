@@ -18,6 +18,7 @@ def _make_daily(**overrides):
         "off_today": False, "off_today_full_silence": False,
         "task_queue": [], "opus_session_active": False,
         "opus_session_messages": 0, "last_suggestion": None, "last_suggestion_ts": None,
+        "commitment_minutes": None,
     }
     base.update(overrides)
     return base
@@ -117,6 +118,21 @@ async def test_schedule_replaces_existing_job(handler, apscheduler):
         assert kwargs.get("id") == "followup"
 
 
+async def test_schedule_stores_commitment_minutes(handler, state_manager, apscheduler):
+    handler.set_apscheduler(apscheduler)
+    await handler.schedule("Finish report", minutes=17)
+    kwargs = state_manager.update_daily.call_args[1]
+    assert kwargs["commitment_minutes"] == 17
+
+
+async def test_schedule_default_minutes_from_config(handler, state_manager, apscheduler, config):
+    config.followup_delay_min = 20
+    handler.set_apscheduler(apscheduler)
+    await handler.schedule("Finish report")
+    kwargs = state_manager.update_daily.call_args[1]
+    assert kwargs["commitment_minutes"] == 20
+
+
 # ── cancel ────────────────────────────────────────────────────────────────────
 
 def test_cancel_removes_job(handler, apscheduler):
@@ -179,6 +195,29 @@ async def test_fire_skipped_if_get_send_fn_returns_none(handler, state_manager, 
     handler._get_send_fn = MagicMock(return_value=None)
     handler.set_apscheduler(apscheduler)
     await handler._fire()  # should not raise
+
+
+async def test_fire_message_uses_commitment_minutes(handler, state_manager, get_send_fn, apscheduler):
+    state_manager.get_daily = AsyncMock(return_value=_make_daily(
+        last_suggestion="Finish report", commitment_minutes=17
+    ))
+    handler.set_apscheduler(apscheduler)
+    await handler._fire()
+    send_fn = get_send_fn.return_value
+    msg = send_fn.call_args[0][0]
+    assert "17" in msg
+
+
+async def test_handle_timer_set_schedules_and_confirms(handler, state_manager, apscheduler, clock):
+    handler.set_apscheduler(apscheduler)
+    send_fn = AsyncMock()
+    await handler.handle_timer_set("Finish report", 25, send_fn)
+    # Should schedule
+    apscheduler.add_job.assert_called_once()
+    # Should send confirmation
+    send_fn.assert_called_once()
+    msg = send_fn.call_args[0][0]
+    assert "25" in msg
 
 
 # ── handle_done ───────────────────────────────────────────────────────────────

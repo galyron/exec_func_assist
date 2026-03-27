@@ -23,6 +23,7 @@ class DailyState(TypedDict):
     last_suggestion: Optional[str]      # text of last suggestion sent
     last_suggestion_ts: Optional[str]   # ISO datetime
     last_suggested_task_id: Optional[str]  # Joplin task id of last suggested task (for auto-done)
+    commitment_minutes: Optional[int]   # duration of current commitment timer (None = not set)
     morning_retry_sent: bool            # True once fire_retry has fired — prevents duplicate sends
 
 
@@ -85,6 +86,7 @@ def default_daily_state(date_str: str) -> DailyState:
         last_suggestion=None,
         last_suggestion_ts=None,
         last_suggested_task_id=None,
+        commitment_minutes=None,
         morning_retry_sent=False,
     )
 

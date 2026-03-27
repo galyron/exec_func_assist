@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from context.assembler import AssembledContext, Mode
-from llm.client import LLMClient, _FALLBACK_MESSAGE, _OPUS, _SONNET
+from llm.client import LLMClient, _FALLBACK_MESSAGE, _OPUS, _SONNET, _build_messages
 
 TZ = ZoneInfo("Europe/Berlin")
 
@@ -175,3 +175,67 @@ async def test_opus_session_reverts_at_max(client, state_manager, config):
     state_manager.update_daily.assert_called_once_with(
         opus_session_active=False, opus_session_messages=0
     )
+
+
+# ── _build_messages ───────────────────────────────────────────────────────────
+
+def _ix(direction: str, content: str) -> dict:
+    return {"timestamp": "2026-03-27T10:00:00", "direction": direction,
+            "content": content, "user_id": "default"}
+
+
+def test_build_messages_no_history():
+    msgs = _build_messages([], "Hello")
+    assert msgs == [{"role": "user", "content": "Hello"}]
+
+
+def test_build_messages_with_history():
+    interactions = [
+        _ix("bot", "Good morning!"),
+        _ix("user", "medium"),
+        _ix("bot", "What's your goal today?"),
+        _ix("user", "Finish the report"),
+    ]
+    msgs = _build_messages(interactions, "Trigger")
+    roles = [m["role"] for m in msgs]
+    # Must start and end with "user", and alternate
+    assert roles[0] == "user"
+    assert roles[-1] == "user"
+    for i in range(len(roles) - 1):
+        assert roles[i] != roles[i + 1], f"Consecutive {roles[i]} at positions {i},{i+1}"
+
+
+def test_build_messages_drops_leading_assistant():
+    # History starts with a bot message — must be dropped so API gets user-first
+    interactions = [_ix("bot", "Hello"), _ix("user", "Hi")]
+    msgs = _build_messages(interactions, "Now")
+    assert msgs[0]["role"] == "user"
+
+
+def test_build_messages_merges_consecutive_same_role():
+    interactions = [
+        _ix("bot", "Message A"),
+        _ix("bot", "Message B"),
+        _ix("user", "Reply"),
+    ]
+    msgs = _build_messages(interactions, "Trigger")
+    # After dropping leading bot, first is user reply, last is trigger merged
+    assert msgs[0]["role"] == "user"
+    assert "Reply" in msgs[0]["content"]
+    assert "Trigger" in msgs[0]["content"]
+
+
+def test_build_messages_trigger_appended_to_last_user():
+    interactions = [_ix("bot", "Hi"), _ix("user", "Last user msg")]
+    msgs = _build_messages(interactions, "Trigger")
+    # Last turn is user with the original content + trigger merged
+    assert msgs[-1]["role"] == "user"
+    assert "Last user msg" in msgs[-1]["content"]
+    assert "Trigger" in msgs[-1]["content"]
+
+
+def test_build_messages_ends_with_trigger():
+    interactions = [_ix("user", "Hi"), _ix("bot", "Hello")]
+    msgs = _build_messages(interactions, "What next?")
+    assert msgs[-1]["role"] == "user"
+    assert msgs[-1]["content"] == "What next?"

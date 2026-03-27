@@ -240,20 +240,6 @@ def _format_context(
         lines.append("  (no active tasks)")
     lines.append("")
 
-    # Recent interactions
-    lines.append("RECENT EXCHANGES")
-    if interactions:
-        for ix in interactions[-5:]:
-            ts = ix["timestamp"][:16].replace("T", " ")
-            who = config.user_name if ix["direction"] == "user" else "EVA"
-            content = ix["content"][:120]
-            lines.append(f"  [{ts}] {who}: {content!r}")
-    elif not has_prior_history:
-        lines.append("  (first session — no prior history)")
-    else:
-        lines.append("  (no exchanges yet today)")
-    lines.append("")
-
     # State
     lines.append("STATE")
     morning_status = "complete" if daily.get("morning_complete") else "pending"

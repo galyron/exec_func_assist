@@ -20,6 +20,8 @@ from llm.client import LLMClient
 from state.manager import StateManager
 from utils.clock import Clock
 
+from handlers.followup import TimerPickerView
+
 if TYPE_CHECKING:
     from connectors.calendar import CalendarConnector
     from connectors.joplin import JoplinConnector
@@ -37,6 +39,7 @@ class Intent(str, Enum):
     SKIP = "skip"
     ADD_TASK = "add_task"
     ADD_EVENT = "add_event"
+    COMMIT = "commit"
     USE_OPUS = "use_opus"
     TRIGGER = "trigger"
     GENERAL = "general"
@@ -83,6 +86,11 @@ def detect_intent(text: str) -> Intent:
 
     if lower.startswith("add:") or lower.startswith("add :"):
         return Intent.ADD_TASK
+
+    # Commitment timer: "I need 17 mins", "give me 20 min", "17 min to finish X", "commit: 25 mins"
+    if re.search(r'\b(?:i need|give me|commit)[:\s]+\d+\s*min', lower) or \
+       re.match(r'\d+\s*min', lower):
+        return Intent.COMMIT
 
     if re.search(r"\b(done|finished|completed|i finished|done with)\b", lower):
         return Intent.FINISHED
@@ -155,6 +163,8 @@ class OnDemandHandler(BaseHandler):
             await self._handle_add_task(text, send_fn)
         elif intent == Intent.ADD_EVENT:
             await self._handle_add_event(text, send_fn)
+        elif intent == Intent.COMMIT:
+            await self._handle_commit(text, send_fn)
         elif intent == Intent.USE_OPUS:
             await self._handle_use_opus(send_fn)
         else:
@@ -235,8 +245,40 @@ class OnDemandHandler(BaseHandler):
         )
         response = await self._llm.send(ctx, trigger)
         await send_fn(response)
-        await self._followup.schedule(response)
         await self._log_bot(response)
+        view = TimerPickerView(handler=self._followup, suggestion=response)
+        await send_fn("How long do you need? Set your commitment:", view=view)
+
+    async def _handle_commit(self, text: str, send_fn: SendFn) -> None:
+        """Parse a time commitment and schedule a check-back timer."""
+        match = re.search(r'(\d+)\s*(?:min(?:utes?)?)', text, re.IGNORECASE)
+        if not match:
+            await send_fn("I didn't catch the duration. Try: \"I need 20 minutes to finish X\"")
+            return
+
+        minutes = int(match.group(1))
+        if not 1 <= minutes <= 240:
+            await send_fn("Timer must be between 1 and 240 minutes.")
+            return
+
+        # Extract task: everything after "to" or "for" following the time spec
+        task_match = re.search(
+            r'\d+\s*min(?:utes?)?\s+(?:to|for)\s+(.+)',
+            text, re.IGNORECASE,
+        )
+        task = task_match.group(1).strip() if task_match else ""
+
+        # Fall back to last_suggestion if no explicit task given
+        if not task:
+            daily = await self._state.get_daily()
+            task = daily.get("last_suggestion") or "the task"
+
+        await self._followup.schedule(task, minutes=minutes)
+        at_time = (self._clock.now() + timedelta(minutes=minutes)).strftime("%H:%M")
+        msg = f"Committed — {minutes} minutes for: {task}. I'll check back at {at_time}."
+        await send_fn(msg)
+        await self._log_user(text)
+        await self._log_bot(msg)
 
     async def _handle_skip(self, send_fn: SendFn) -> None:
         msg = f"Skipped. That task is still on the list, {self._config.user_name}."

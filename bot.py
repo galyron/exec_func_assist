@@ -217,7 +217,7 @@ def _build_bot(args: argparse.Namespace, config, clock: Clock) -> EFABot:
         tasks, events, interactions = await asyncio.gather(
             joplin.get_tasks(),
             calendar.get_events(),
-            state.get_recent_interactions(5),
+            state.get_recent_interactions(20),
         )
         return await assembler.assemble(tasks, events, interactions)
 

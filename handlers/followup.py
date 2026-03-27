@@ -50,19 +50,26 @@ class FollowupHandler(BaseHandler):
 
     # ── Scheduling ────────────────────────────────────────────────────────────
 
-    async def schedule(self, suggestion: str) -> None:
-        """Store suggestion in state and schedule the follow-up job."""
+    async def schedule(self, suggestion: str, minutes: Optional[int] = None) -> None:
+        """Store suggestion in state and schedule the follow-up job.
+
+        Args:
+            suggestion: Task description shown in the follow-up message.
+            minutes: Timer duration. Falls back to config.followup_delay_min if None.
+        """
         now = self._clock.now()
+        delay_min = minutes if minutes is not None else getattr(self._config, "followup_delay_min", 20)
+
         await self._state.update_daily(
             last_suggestion=suggestion,
             last_suggestion_ts=now.isoformat(),
+            commitment_minutes=delay_min,
         )
 
         if self._apscheduler is None:
             log.warning("FollowupHandler.schedule() called before set_apscheduler()")
             return
 
-        delay_min = getattr(self._config, "followup_delay_min", 20)
         from datetime import timedelta
         run_at = now + timedelta(minutes=delay_min)
 
@@ -74,7 +81,16 @@ class FollowupHandler(BaseHandler):
             replace_existing=True,
             misfire_grace_time=120,
         )
-        log.info("Follow-up scheduled for %s", run_at.strftime("%H:%M"))
+        log.info("Follow-up scheduled for %s (%d min)", run_at.strftime("%H:%M"), delay_min)
+
+    async def handle_timer_set(self, suggestion: str, minutes: int, send_fn: SendFn) -> None:
+        """Called when user picks a duration from the timer picker view."""
+        await self.schedule(suggestion, minutes=minutes)
+        from datetime import timedelta
+        at_time = (self._clock.now() + timedelta(minutes=minutes)).strftime("%H:%M")
+        msg = f"Committed — {minutes} minutes. I'll check back at {at_time}. Go."
+        await send_fn(msg)
+        await self._log_bot(msg)
 
     def cancel(self) -> None:
         """Cancel the pending follow-up job, silently ignoring if absent."""
@@ -100,9 +116,8 @@ class FollowupHandler(BaseHandler):
             log.warning("FollowupHandler._fire(): channel not available")
             return
 
-        msg = (
-            f"{self._config.user_name} — 20 minutes. Did you do it or not?"
-        )
+        minutes = daily.get("commitment_minutes") or getattr(self._config, "followup_delay_min", 20)
+        msg = f"{self._config.user_name} — {minutes} minutes are up. Did you do it or not?"
         view = _FollowupView(handler=self)
         await send_fn(msg, view=view)
         await self._log_bot(msg)
@@ -162,3 +177,41 @@ class _FollowupView(discord.ui.View):
         self.stop()
         await interaction.response.defer()
         await self._handler.handle_skipped(interaction.followup.send)
+
+
+class TimerPickerView(discord.ui.View):
+    """Button row for picking a commitment timer duration after a suggestion."""
+
+    def __init__(self, handler: FollowupHandler, suggestion: str) -> None:
+        super().__init__(timeout=300)  # 5 minutes to pick
+        self._handler = handler
+        self._suggestion = suggestion
+
+    async def _set(self, interaction: discord.Interaction, minutes: int) -> None:
+        self.stop()
+        await interaction.response.defer()
+        await self._handler.handle_timer_set(
+            self._suggestion, minutes, interaction.followup.send
+        )
+
+    @discord.ui.button(label="10 min", style=discord.ButtonStyle.primary)
+    async def ten(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._set(interaction, 10)
+
+    @discord.ui.button(label="20 min", style=discord.ButtonStyle.primary)
+    async def twenty(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._set(interaction, 20)
+
+    @discord.ui.button(label="30 min", style=discord.ButtonStyle.primary)
+    async def thirty(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._set(interaction, 30)
+
+    @discord.ui.button(label="45 min", style=discord.ButtonStyle.primary)
+    async def forty_five(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._set(interaction, 45)
+
+    @discord.ui.button(label="No timer", style=discord.ButtonStyle.secondary)
+    async def no_timer(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self.stop()
+        await interaction.response.defer()
+        await interaction.followup.send("No timer set. Go.")
