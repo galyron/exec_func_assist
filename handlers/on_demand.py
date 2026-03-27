@@ -87,9 +87,14 @@ def detect_intent(text: str) -> Intent:
     if lower.startswith("add:") or lower.startswith("add :"):
         return Intent.ADD_TASK
 
-    # Commitment timer: "I need 17 mins", "give me 20 min", "17 min to finish X", "commit: 25 mins"
-    if re.search(r'\b(?:i need|give me|commit)[:\s]+\d+\s*min', lower) or \
-       re.match(r'\d+\s*min', lower):
+    # Commitment timer: only short, focused timer messages.
+    # "I need 17 mins to X", "give me 20 min", "17 min", "commit: 25 mins"
+    # Must NOT match long multi-part messages where "I need N min" is incidental.
+    # Require the pattern near the start (first 60 chars) or the message to be short.
+    if len(lower) < 80 and (
+        re.search(r'\b(?:i need|give me|commit)[:\s]+\d+\s*min', lower)
+        or re.match(r'\d+\s*min', lower)
+    ):
         return Intent.COMMIT
 
     if re.search(r"\b(done|finished|completed|i finished|done with)\b", lower):
@@ -251,7 +256,15 @@ class OnDemandHandler(BaseHandler):
 
     async def _handle_commit(self, text: str, send_fn: SendFn) -> None:
         """Parse a time commitment and schedule a check-back timer."""
-        match = re.search(r'(\d+)\s*(?:min(?:utes?)?)', text, re.IGNORECASE)
+        # Use the same patterns as detect_intent so we extract from the right match:
+        # "i need 17 min...", "give me 20 min...", "commit: 25 min...", or "17 min..."
+        match = re.search(
+            r'(?:i need|give me|commit)[:\s]+(\d+)\s*(?:min(?:utes?|s)?)',
+            text, re.IGNORECASE,
+        )
+        if not match:
+            # Bare "17 min" at start of message
+            match = re.match(r'(\d+)\s*(?:min(?:utes?|s)?)', text.strip(), re.IGNORECASE)
         if not match:
             await send_fn("I didn't catch the duration. Try: \"I need 20 minutes to finish X\"")
             return
@@ -261,12 +274,10 @@ class OnDemandHandler(BaseHandler):
             await send_fn("Timer must be between 1 and 240 minutes.")
             return
 
-        # Extract task: everything after "to" or "for" following the time spec
-        task_match = re.search(
-            r'\d+\s*min(?:utes?)?\s+(?:to|for)\s+(.+)',
-            text, re.IGNORECASE,
-        )
-        task = task_match.group(1).strip() if task_match else ""
+        # Extract task: text after the matched time spec, following "to" or "for"
+        after_match = text[match.end():]
+        task_after = re.match(r'\s+(?:to|for)\s+(.+)', after_match, re.IGNORECASE | re.DOTALL)
+        task = task_after.group(1).strip().split('\n')[0].strip() if task_after else ""
 
         # Fall back to last_suggestion if no explicit task given
         if not task:

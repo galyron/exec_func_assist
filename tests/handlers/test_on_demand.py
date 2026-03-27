@@ -547,6 +547,21 @@ def test_detect_intent_commit_not_triggered_by_done():
     assert detect_intent("done: the report") != Intent.COMMIT
 
 
+def test_detect_intent_commit_not_triggered_by_long_message():
+    # Long multi-part messages mentioning "I need N min" incidentally should NOT be COMMIT
+    long_msg = (
+        "ok, I have about 30 mins now; I need to:\n"
+        "send out invite to Schilling with the location\n"
+        "I need 5 mins to send out the invite to Schilling"
+    )
+    assert detect_intent(long_msg) == Intent.GENERAL
+
+
+def test_detect_intent_commit_extracts_mins_not_first_number():
+    # "I need 5 mins to send the invite" — must extract 5, not some other number
+    assert detect_intent("I need 5 mins to send the invite") == Intent.COMMIT
+
+
 # ── _handle_commit ────────────────────────────────────────────────────────────
 
 async def test_handle_commit_schedules_timer(handler, state_manager, followup_handler):
@@ -578,6 +593,17 @@ async def test_handle_commit_falls_back_to_last_suggestion(handler, state_manage
     call_args = mock_schedule.call_args
     task = call_args[0][0]
     assert "proposal" in task.lower()
+
+
+async def test_handle_commit_extracts_task_with_mins(handler, state_manager, followup_handler):
+    """'I need 5 mins to send the invite' — must extract 5 (not some other number) and the task."""
+    send_fn = AsyncMock()
+    with patch.object(followup_handler, "schedule", new=AsyncMock()) as mock_schedule:
+        await handler.handle("I need 5 mins to send the Schilling invite", send_fn)
+    args = mock_schedule.call_args
+    assert args[1]["minutes"] == 5
+    task = args[0][0]
+    assert "Schilling" in task
 
 
 async def test_handle_commit_rejects_out_of_range(handler, followup_handler):
