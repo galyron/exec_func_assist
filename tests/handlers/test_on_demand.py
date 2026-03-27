@@ -355,11 +355,12 @@ def test_intent_done_task_colon():
 def test_intent_done_task_colon_spaced():
     assert detect_intent("done : send the email") == Intent.DONE_TASK
 
-def test_intent_done_task_no_colon():
-    assert detect_intent("done Get rid of Substack account") == Intent.DONE_TASK
+def test_intent_done_without_colon_is_finished():
+    # Without colon, "done <text>" is now FINISHED — task marking requires colon or buttons.
+    assert detect_intent("done Get rid of Substack account") == Intent.FINISHED
 
-def test_intent_done_task_no_colon_lowercase():
-    assert detect_intent("done fix login bug") == Intent.DONE_TASK
+def test_intent_done_text_without_colon_is_finished():
+    assert detect_intent("done fix login bug") == Intent.FINISHED
 
 def test_intent_done_plain_is_finished():
     assert detect_intent("done") == Intent.FINISHED

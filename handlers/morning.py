@@ -164,6 +164,28 @@ class MorningRoutineHandler(BaseHandler):
     # ── State query ───────────────────────────────────────────────────────────
 
     async def is_active(self) -> bool:
-        """True when the routine has started but not yet completed."""
+        """True when the routine has started but not yet completed.
+
+        Time-guarded: automatically deactivates after work_start so stale
+        morning state from a misfired scheduler or container overlap cannot
+        hijack all message routing for the rest of the day.
+        """
         daily = await self._state.get_daily()
-        return bool(daily["morning_questions_asked"]) and not daily["morning_complete"]
+        if not daily["morning_questions_asked"] or daily["morning_complete"]:
+            return False
+
+        # Auto-expire: if work has started, the morning window is over.
+        now = self._clock.now()
+        work_start = self._config.work_start  # e.g. "09:15"
+        h, m = work_start.split(":")
+        from datetime import time as dt_time
+        if now.time() >= dt_time(int(h), int(m)):
+            log.warning(
+                "Morning routine still open at %s (past work_start %s) — "
+                "auto-completing to unblock message routing.",
+                now.strftime("%H:%M"), work_start,
+            )
+            await self._state.update_daily(morning_complete=True)
+            return False
+
+        return True

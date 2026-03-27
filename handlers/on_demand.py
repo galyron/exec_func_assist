@@ -74,11 +74,9 @@ def detect_intent(text: str) -> Intent:
     if lower.startswith("off today"):
         return Intent.OFF_TODAY
 
+    # "done: <task>" — explicit colon required for task completion via text.
+    # All other task-done actions go through buttons (FollowupView, CheckinView).
     if re.match(r"done\s*:", lower):
-        return Intent.DONE_TASK
-
-    # "done <task text>" without colon — but not "done with/it/already/for/today/now/everything"
-    if re.match(r"done\s+(?!(with|it|already|for|today|now|everything)\b)\S", lower):
         return Intent.DONE_TASK
 
     if re.match(r"(schedule|add\s+event)\s*:", lower):
@@ -88,19 +86,16 @@ def detect_intent(text: str) -> Intent:
         return Intent.ADD_TASK
 
     # Commitment timer: only short, focused timer messages.
-    # "I need 17 mins to X", "give me 20 min", "17 min", "commit: 25 mins"
-    # Must NOT match long multi-part messages where "I need N min" is incidental.
-    # Require the pattern near the start (first 60 chars) or the message to be short.
     if len(lower) < 80 and (
         re.search(r'\b(?:i need|give me|commit)[:\s]+\d+\s*min', lower)
         or re.match(r'\d+\s*min', lower)
     ):
         return Intent.COMMIT
 
-    if re.search(r"\b(done|finished|completed|i finished|done with)\b", lower):
+    # FINISHED / STUCK: only at the start of the message, not mid-sentence.
+    if re.match(r"(i'?m\s+|i\s+)?(done|finished|completed|done with)\b", lower):
         return Intent.FINISHED
-
-    if re.search(r"\b(stuck|struggling)\b", lower):
+    if re.match(r"(i'?m\s+|i\s+)?(stuck|struggling)\b", lower):
         return Intent.STUCK
 
     if re.search(r"^skip\b", lower):

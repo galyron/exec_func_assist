@@ -84,9 +84,16 @@ class LLMClient:
 
         model = self._select_model(state)
         system_base = system_override or get_system_prompt(context.mode)
-        # Inject current state (tasks, calendar, mode) into the system prompt so it
-        # is present throughout the conversation, not just in the first user turn.
-        system = f"{system_base}\n\n{context.text}"
+        # Inject current state (tasks, calendar, mode) into the system prompt.
+        # Add an explicit mode anchor so the LLM cannot be misled by conversation history.
+        mode_anchor = (
+            f"\n\nCURRENT STATE — OVERRIDES ALL PRIOR CONVERSATION:\n"
+            f"Mode: {context.mode.value.upper()} | Time: {context.now.strftime('%A %Y-%m-%d %H:%M')} | "
+            f"Energy: {context.energy}\n"
+            f"Respond according to {context.mode.value.upper()} mode rules. "
+            f"Ignore any tone, greetings, or mode references from prior messages in this conversation."
+        )
+        system = f"{system_base}\n\n{context.text}{mode_anchor}"
         messages = _build_messages(context.recent_interactions, user_message)
 
         try:

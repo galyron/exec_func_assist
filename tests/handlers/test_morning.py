@@ -63,6 +63,7 @@ def _make_context():
 def config():
     cfg = MagicMock()
     cfg.user_name = "Gabriell"
+    cfg.work_start = "09:15"
     return cfg
 
 
@@ -237,6 +238,19 @@ async def test_is_active_true_when_in_progress(handler, state_manager):
         return_value=_make_daily(morning_questions_asked=["energy"])
     )
     assert await handler.is_active() is True
+
+
+async def test_is_active_auto_expires_after_work_start(handler, state_manager, clock):
+    """Morning routine auto-completes if it's still open after work_start."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    state_manager.get_daily = AsyncMock(
+        return_value=_make_daily(morning_questions_asked=["energy"])
+    )
+    clock.now.return_value = datetime(2026, 3, 25, 14, 30, tzinfo=ZoneInfo("Europe/Berlin"))
+    assert await handler.is_active() is False
+    # Should have auto-completed
+    state_manager.update_daily.assert_called_with(morning_complete=True)
 
 
 async def test_is_active_false_when_complete(handler, state_manager):
