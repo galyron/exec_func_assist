@@ -65,10 +65,12 @@ class CheckinHandler(BaseHandler):
 
         if checkin_type == CheckinType.MIDDAY:
             trigger = (
-                f"It is {now_str}. Midday check-in for {self._config.user_name}. "
-                "State what should be happening right now based on the task list. "
-                "Name the single most important thing to execute before end of work day. "
-                "Name the first physical action. No soft exits. Under 80 words."
+                f"It is {now_str}. WORK MODE. Midday check-in for {self._config.user_name}. "
+                "This is the middle of the work day — prime time, not wind-down time. "
+                "Name the single task that must be completed before end of day. "
+                "Name the first physical action: open it, write it, send it — be specific. "
+                "Do not ask about energy. Do not suggest rest. Do not soften. "
+                "Under 80 words."
             )
         else:
             trigger = (
