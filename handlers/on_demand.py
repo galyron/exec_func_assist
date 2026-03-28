@@ -56,7 +56,43 @@ _TRIGGER_ALIASES: dict[str, str] = {
     "eod":          "eod",
     "end of day":   "eod",
     "bedtime":      "bedtime",
+    "help":         "help",
 }
+
+_HELP_TEXT = """**EVA — Quick Reference**
+
+**Commands** (prefix with `!`):
+> `!morning` — trigger morning check-in
+> `!kickoff` — trigger day kick-off briefing
+> `!midday` — trigger midday check-in
+> `!evening` — trigger evening check-in
+> `!eod` / `!end of day` — trigger end-of-day review
+> `!bedtime` — trigger bedtime reminder
+> `!retry` — re-send morning check-in nudge
+> `!help` — show this reference
+
+**Keywords** (type directly):
+> `off today` — suppress all proactive messages for the day
+> `off today full silence` — suppress everything including bedtime
+> `done: <task>` — mark a task as done in Joplin
+> `add: <task>` — add a new task to Joplin inbox
+> `schedule: <event>` — add a Google Calendar event
+> `I need 20 min` / `give me 15 min` / `20 min` — set a commitment timer
+> `done` / `finished` — mark current task done, cancel timer
+> `stuck` / `struggling` — get unstuck help + timer picker
+> `skip` — skip current suggestion
+> `<use_opus>` — switch to Opus model for this session
+
+**Task tags** (in Joplin — auto-detected from task text):
+> `[today]` / `eod` / `asap` — must be done today
+> `[urgent]` — drop everything
+> `[this-week]` / `eow` — sometime this week
+> `[high]` / `important` — high priority, not time-bound
+> `[low-energy]` / `[couch]` — can do when tired / from the couch
+> `[easy]` / `quick` — quick win
+
+**Everything else** → goes to the LLM as a general message.
+"""
 
 
 # ── Pure intent detection (module-level for easy testing) ─────────────────────
@@ -178,6 +214,9 @@ class OnDemandHandler(BaseHandler):
         if job is None:
             available = ", ".join(f"`!{k}`" for k in _TRIGGER_ALIASES if k == _TRIGGER_ALIASES[k])
             await send_fn(f"Unknown trigger `!{name}`. Available: {available}")
+            return
+        if job == "help":
+            await send_fn(_HELP_TEXT)
             return
         if self._scheduler is None:
             await send_fn("Scheduler not ready yet — try again in a moment.")
