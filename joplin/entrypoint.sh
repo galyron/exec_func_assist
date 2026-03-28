@@ -53,11 +53,12 @@ joplin config api.port 41185
 echo "[joplin] Running initial sync..."
 joplin sync && echo "[joplin] Initial sync complete." || echo "[joplin] Initial sync failed — server will start anyway, bot will retry."
 
-# ── Background sync loop (every 15 min during active hours) ──────────────────
+# ── Background sync loop (every 5 min) ───────────────────────────────────────
 # The bot reads from the REST API; Joplin must pull from Dropbox independently.
+# 5 min keeps new TODOs from desktop visible within a reasonable window.
 
 (
-  SYNC_INTERVAL=900  # 15 minutes
+  SYNC_INTERVAL=300  # 5 minutes
   while true; do
     sleep "$SYNC_INTERVAL"
     echo "[joplin] Running scheduled sync..."
