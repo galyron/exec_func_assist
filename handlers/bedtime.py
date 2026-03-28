@@ -95,7 +95,9 @@ class BedtimeHandler(BaseHandler):
             f"Today had {len(today_interactions)} recorded exchanges.{tomorrow_section}\n\n"
             "2–3 sentences: what got done, what didn't, and the one specific task that must "
             "happen first tomorrow — placed precisely relative to tomorrow's actual schedule above. "
-            "Be direct. No comfort. Unfinished work is debt. Name it plainly."
+            "Be direct. No comfort. No emojis. No 'that's okay'. No 'rest up'. "
+            "Unfinished work is debt. Name it plainly. "
+            "Even if it's the weekend, the tone is hard — unfinished tasks are still unfinished."
         )
         response = await self._llm.send(ctx, trigger)
         await send_fn(response)

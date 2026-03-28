@@ -155,7 +155,7 @@ class Scheduler:
             id=job_id,
             coalesce=True,
             max_instances=1,
-            misfire_grace_time=60,   # fire up to 1 min late; keeps restart-replay window small
+            misfire_grace_time=5,    # 5s grace — prevents stale jobs from firing after deploy/restart
         )
         log.debug("Registered job: %s  trigger: %s", job_id, trigger)
 
