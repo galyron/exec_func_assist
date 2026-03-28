@@ -150,8 +150,8 @@ class MorningRoutineHandler(BaseHandler):
             trigger = (
                 f"It is {now_str}. {self._config.user_name} has completed the morning check-in. "
                 "Generate a sharp 2–3 sentence day-plan based on what they shared: "
-                "the priority, the first action, and what stands between them and a good day. "
-                "No fluff. Make it sound like a plan that will actually happen."
+                "the priority, the first action, and what it costs to deviate. "
+                "No encouragement. No fluff. Just the plan and the consequences of not following it."
             )
             response = await self._llm.send(ctx, trigger)
             await self._state.update_daily(morning_complete=True)

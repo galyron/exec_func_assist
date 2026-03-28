@@ -54,6 +54,8 @@ class KickoffHandler(BaseHandler):
             f"It is {now_str}. Generate the day kick-off message for {self._config.user_name}. "
             "Include: a one-line calendar summary, the key free windows, "
             "and the top 2–3 task suggestions with a specific first physical action for each. "
+            "No encouragement. No 'let's have a great day'. "
+            "Name what must get done and what it costs to delay. "
             "Keep it under 200 words."
         )
         response = await self._llm.send(ctx, trigger)

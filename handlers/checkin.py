@@ -75,11 +75,13 @@ class CheckinHandler(BaseHandler):
         else:
             trigger = (
                 f"It is {now_str}. Evening check-in for {self._config.user_name}. "
-                "Energy is lower — that is real. It does not mean the day is over. "
+                f"{self._config.user_name} is likely on the couch with the TV on. "
+                "Break the idleness. Pull attention back to waiting tasks. "
                 "Suggest 1–2 couch-compatible tasks (tagged [couch], [low-energy], or [easy]). "
                 "Name the first physical action for each. 15-minute commitment max. "
-                "Make clear what it costs to skip even this: tomorrow starts heavier. "
-                "Under 100 words. No empty comfort."
+                "\"You're not relaxing — you're wasting time pretending you are.\" "
+                "\"Tomorrow you wake up carrying today's unfinished weight.\" "
+                "Under 100 words. No accommodation. No comfort."
             )
 
         response = await self._llm.send(ctx, trigger)
