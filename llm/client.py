@@ -27,7 +27,6 @@ from config import Config
 from context.assembler import AssembledContext, Mode
 from llm.prompts import get_system_prompt
 from state.manager import StateManager
-from state.models import Interaction
 
 log = logging.getLogger(__name__)
 
@@ -84,17 +83,10 @@ class LLMClient:
 
         model = self._select_model(state)
         system_base = system_override or get_system_prompt(context.mode)
-        # Inject current state (tasks, calendar, mode) into the system prompt.
-        # Add an explicit mode anchor so the LLM cannot be misled by conversation history.
-        mode_anchor = (
-            f"\n\nCURRENT STATE — OVERRIDES ALL PRIOR CONVERSATION:\n"
-            f"Mode: {context.mode.value.upper()} | Time: {context.now.strftime('%A %Y-%m-%d %H:%M')} | "
-            f"Energy: {context.energy}\n"
-            f"Respond according to {context.mode.value.upper()} mode rules. "
-            f"Ignore any tone, greetings, or mode references from prior messages in this conversation."
-        )
-        system = f"{system_base}\n\n{context.text}{mode_anchor}"
-        messages = _build_messages(context.recent_interactions, user_message)
+        # Single-turn: context (tasks, calendar, exchange log) in system prompt,
+        # one user message. No multi-turn history — prevents tone contamination.
+        system = f"{system_base}\n\n{context.text}"
+        messages = [{"role": "user", "content": user_message}]
 
         try:
             response = await asyncio.to_thread(
@@ -160,42 +152,6 @@ class LLMClient:
             log.info("Opus session ended after %d messages — reverted to Sonnet.", count)
         else:
             await self._state.update_daily(opus_session_messages=count)
-
-
-# ── Message construction ──────────────────────────────────────────────────────
-
-def _build_messages(interactions: list[Interaction], user_message: str) -> list[dict]:
-    """Build alternating API message turns from interaction history + current trigger.
-
-    The Anthropic API requires strict user/assistant alternation, starting and
-    ending with "user". Consecutive same-role interactions are merged.
-    """
-    if not interactions:
-        return [{"role": "user", "content": user_message}]
-
-    turns: list[dict] = []
-    for ix in interactions:
-        role = "assistant" if ix["direction"] == "bot" else "user"
-        if turns and turns[-1]["role"] == role:
-            turns[-1]["content"] += "\n" + ix["content"]
-        else:
-            turns.append({"role": role, "content": ix["content"]})
-
-    # API requires first message to be "user" — drop leading assistant turns
-    while turns and turns[0]["role"] != "user":
-        turns.pop(0)
-
-    if not turns:
-        return [{"role": "user", "content": user_message}]
-
-    # Append current trigger as final "user" turn
-    if turns[-1]["role"] == "user":
-        # Last turn is already user — merge so we don't create consecutive user messages
-        turns[-1]["content"] += f"\n\n{user_message}"
-    else:
-        turns.append({"role": "user", "content": user_message})
-
-    return turns
 
 
 # ── Standalone verification ───────────────────────────────────────────────────

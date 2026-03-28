@@ -240,6 +240,22 @@ def _format_context(
         lines.append("  (no active tasks)")
     lines.append("")
 
+    # Recent exchanges (factual log — no tone, just facts)
+    if interactions:
+        lines.append("RECENT EXCHANGES (factual log)")
+        for ix in interactions[-10:]:  # cap to last 10
+            direction = "EVA" if ix["direction"] == "bot" else "Gabriell"
+            ts = ix.get("timestamp", "")
+            # Extract just the time portion if it's a full timestamp
+            if "T" in ts:
+                ts = ts.split("T")[1][:5]
+            content = ix["content"]
+            # Truncate long messages to keep context lean
+            if len(content) > 200:
+                content = content[:200] + "…"
+            lines.append(f"  [{ts}] {direction}: {content}")
+        lines.append("")
+
     # State
     lines.append("STATE")
     morning_status = "complete" if daily.get("morning_complete") else "pending"
