@@ -1,5 +1,3 @@
-Things are still very much off! The language is still not what I want to be. I said the language should be:
-
 I am not looking for “positive” or feel-good motivation; I am targeting a very specific psychological style: high-pressure, consequence-driven activation language!
 
 This is a form of motivational language designed to trigger immediate action, not reflection or comfort. It deliberately removes softness, encouragement, and ambiguity, and replaces them with urgency, personal responsibility, and consequence awareness.
@@ -82,7 +80,3 @@ Some examples of the language, style (and reminders like this should be included
 - If you don’t move now, when exactly will you?
 
 Also, in the evening mode (or whatever we call it), my problem is that I am often on the couch with the TV on, being distracted by whatever low-quality program that is no TV. I need nudges that break idleness and pull back my attention to the tasks that wait for me and that must be done, tasks that will be done by no-one else!
-
-So possibly we need to reset, and re-evaluate how the LLM is instructed, prompted and executed. We might need to reset the entire convo history. Would that help?
-
-Less urgent point: I also do not see the bot rescanning the TODO lists in joplin on a regular basis. I am adding new TODOs and it does not appear that they are picked up. Can it be a joplin sync issue? Or what is the reason???

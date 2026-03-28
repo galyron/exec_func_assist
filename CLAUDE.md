@@ -76,7 +76,7 @@ python setup_calendar.py
 | Bot framework | `discord.py` 2.x | Buttons, embeds, @mentions |
 | Scheduler | `APScheduler` `AsyncIOScheduler` | Runs within the bot's asyncio event loop |
 | LLM | Anthropic Python SDK | Sonnet default (`claude-sonnet-4-6`); Opus on demand |
-| Joplin | `aiohttp` → `http://joplin:41184` | Joplin CLI in Docker; read-only in Phases 1–2 |
+| Joplin | `aiohttp` → `http://joplin:41184` | Joplin CLI in Docker; read + limited write (inbox append, mark done) |
 | Calendar | Google Calendar API v3 | OAuth2, `calendar.readonly` + `calendar.events` (write) |
 | State | JSON files + `aiofiles` | **Not SQLite.** `state.json`, `interactions.json`, `memory.json` |
 | Deployment | Docker Compose | Same `docker-compose.yml` for dev (MacBook) and prod (mbox) |
@@ -114,7 +114,7 @@ APScheduler ──▶ Scheduler (C14) fires:
   MorningRoutineHandler / KickoffHandler / CheckinHandler / BedtimeHandler
 ```
 
-Every LLM call: fetch tasks + events + last 20 interactions → assemble context → send to Claude (multi-turn) → post response to Discord.
+Every LLM call: fetch tasks + events + recent interactions → assemble context string (including factual exchange log) → single-turn send to Claude → post response to Discord. Interactions are summarised as structured facts in the context string, NOT passed as separate API turns — this prevents tone contamination from prior soft-mode responses.
 
 ### Key Modules
 
@@ -130,7 +130,7 @@ Every LLM call: fetch tasks + events + last 20 interactions → assemble context
 
 **`context/assembler.py` (C5)** — Pure functions `determine_mode()` and `determine_energy()` are module-level (testable without class). `ContextAssembler.assemble()` takes pre-fetched data and returns `AssembledContext` with a formatted `text` field ready for the LLM. Timed calendar events are labelled `[past]`, `[now]`, or `[upcoming]` relative to `clock.now()` so the LLM cannot confuse an event's start time with the current time.
 
-**`llm/client.py` (C6)** — `LLMClient.send()` selects Sonnet/Opus based on session state, tracks monthly spend in `state.json`, enforces `monthly_cost_limit_usd`. Opus auto-reverts after `opus_session_max_messages`. **Conversation model:** context text (tasks, calendar, state) is injected into the system prompt; recent interactions are passed as actual alternating `user`/`assistant` API turns (via `_build_messages()`), giving the LLM genuine conversation memory. The last 20 interactions are fetched per call.
+**`llm/client.py` (C6)** — `LLMClient.send()` selects Sonnet/Opus based on session state, tracks monthly spend in `state.json`, enforces `monthly_cost_limit_usd`. Opus auto-reverts after `opus_session_max_messages`. **Single-turn model:** each call sends one `user` message with the full context string (tasks, calendar, factual exchange log) in the system prompt. No multi-turn API history — this is deliberate to prevent tone contamination across mode transitions.
 
 **`llm/prompts.py`** — System prompts keyed by `Mode` enum. Tone is a first-class feature. **Hardcoded trigger strings inside each handler (`fire()`, `fire_end_of_day()`, etc.) are equally load-bearing** — they are the user-turn instruction that shapes the LLM output. If you change tone, update both `prompts.py` AND the trigger strings in the relevant handler. The end-of-day trigger includes `clock.now()` date+time explicitly to prevent day-of-week hallucination.
 
@@ -148,7 +148,7 @@ Every LLM call: fetch tasks + events + last 20 interactions → assemble context
 
 **`handlers/bedtime.py` (C11)** — `fire_end_of_day()` generates an LLM micro-review from `interactions.json` (skipped if `off_today`). `fire_bedtime()` sends a fixed message (only skipped if `off_today_full_silence`).
 
-**`handlers/on_demand.py` (C12)** — Module-level `detect_intent(text) -> Intent` pure function (testable without class). Intents: `OFF_TODAY`, `FINISHED`, `DONE_TASK`, `STUCK`, `SKIP`, `ADD_TASK`, `ADD_EVENT`, `COMMIT`, `USE_OPUS`, `TRIGGER`, `GENERAL`. Key behaviours: DONE_TASK matches `done: <text>` or `done <text>` (with preposition guard); ADD_EVENT (`schedule:` / `add event:`) uses LLM to extract JSON then calls `CalendarConnector.create_event()`; COMMIT (`"I need 17 min"`, `"give me 20 min"`, `"17 min"`) sets a user-defined APScheduler timer; STUCK calls LLM then shows `TimerPickerView` (no auto-schedule); FINISHED cancels any pending timer. `set_scheduler()` called post-construction.
+**`handlers/on_demand.py` (C12)** — Module-level `detect_intent(text) -> Intent` pure function (testable without class). Intents: `OFF_TODAY`, `FINISHED`, `DONE_TASK`, `STUCK`, `SKIP`, `ADD_TASK`, `ADD_EVENT`, `COMMIT`, `USE_OPUS`, `TRIGGER`, `GENERAL`. Key behaviours: FINISHED and STUCK use `re.match` (start-of-message only) to avoid false positives on natural sentences; DONE_TASK requires explicit `done:` prefix (with colon) or Discord buttons — no implicit matching; COMMIT (`"I need 17 min"`, `"give me 20 min"`) sets a user-defined APScheduler timer (< 80 chars guard); STUCK calls LLM then shows `TimerPickerView` (no auto-schedule); FINISHED cancels any pending timer. `set_scheduler()` called post-construction.
 
 **`scheduler.py` (C14)** — Registers all APScheduler cron jobs. All jobs: `coalesce=True`, `max_instances=1`, `misfire_grace_time=60`. **Every `CronTrigger` must have `timezone=tz` explicitly** — the scheduler's timezone does NOT propagate to triggers; omitting it causes jobs to fire on UTC (1 hour early in Europe/Berlin). Weekend suppression is via `day_of_week` on the trigger. `Scheduler.trigger(name, send_fn=None)` fires any named job manually.
 
@@ -192,9 +192,10 @@ Full rationale in `DECISIONS.md`. Do not re-open without flagging explicitly.
 ## Bot Behaviour
 
 **Weekday modes:**
-1. **Morning** (07:30) — structured interview, one question at a time; retry nudge fires N minutes later if no response
-2. **Work** (09:15–16:00) — maximum pressure; name cost of delay; no soft exits
-3. **Recovery** (20:30+) — couch-compatible tasks only ([couch]/[low-energy]/[easy]); still pushes, 15-min max commitment
+1. **Morning** (07:30) — structured interview, one question at a time; retry nudge fires N minutes later if no response. `is_active()` auto-expires after `work_start` to prevent stale state from hijacking message routing.
+2. **Work** (09:15–16:00) — maximum pressure; name cost of delay; no soft exits; no feeling questions; no rest suggestions
+3. **General** (16:00–20:30) — still consequence-driven; pressure does NOT decrease; tasks still need doing
+4. **Recovery** (20:30+) — targets couch/TV idleness specifically; break the distraction, pull attention back to tasks; couch-compatible tasks ([couch]/[low-energy]/[easy]) but framed as "these are easy, you have no excuse"
 
 **Weekends:** silent unless user initiates. Evening nudge configurable via `weekend_evening_nudge`.
 
@@ -202,7 +203,20 @@ Full rationale in `DECISIONS.md`. Do not re-open without flagging explicitly.
 
 **Nudge cooldown:** 45 min minimum between unsolicited messages. Calendar gap must be ≥ 30 min to trigger a nudge.
 
-**Tone (first-class feature):** hard accountability — name the cost of delay directly; no soft exits by default; name the first concrete physical action; make the loss of time and momentum feel real. Work mode = maximum pressure. Recovery mode = still push, couch-compatible tasks only. The old "never guilt/shame" constraint has been deliberately removed at the user's request.
+**Tone (first-class feature — this is the single most important design element):**
+
+The language style is **high-pressure, consequence-driven activation language**. It is NOT positive motivation, NOT feel-good, NOT encouraging. It is designed to trigger immediate action by:
+- **Pressure**: "Every minute you delay makes it worse."
+- **Accountability**: "No one else will do this for you."
+- **Loss framing**: "You are actively losing time right now."
+- **Future consequences**: "Delay now creates bigger problems later."
+- **Identity challenge**: "You're either acting or avoiding—choose."
+
+Short, sharp sentences. No softness, no ambiguity, no comfort. The goal is to make inaction feel unacceptable. The user already knows what to do — the language breaks inertia.
+
+Recovery/evening mode specifically targets TV/couch distraction: "You're not relaxing, you're falling behind." Pull attention back to waiting tasks.
+
+All modes use this style. There is no mode where EVA is "gentle" or "understanding". The old "never guilt/shame" constraint has been deliberately removed. See `notes/observations.md` for 80+ example phrases in the exact target style.
 
 ---
 

@@ -4,6 +4,14 @@ Deferred features and design decisions that are not in scope for the current pha
 
 ---
 
+## PL-0 -- Gamification
+
+TO BE DEVELOPED
+
+Core idea: maintain a score/streak of completed tasks for each day
+Goal could be to be above a given level every day bot for minor and major tasks as well as for chores
+There could be a small dashboard that shows stats, time series, etc., like a health up that tracks activity
+
 ## PL-1 — Configurable nudge windows and profiles
 
 ### Motivation
