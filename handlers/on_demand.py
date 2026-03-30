@@ -121,10 +121,11 @@ def detect_intent(text: str) -> Intent:
     if lower.startswith("add:") or lower.startswith("add :"):
         return Intent.ADD_TASK
 
-    # Commitment timer: only short, focused timer messages.
-    if len(lower) < 80 and (
-        re.search(r'\b(?:i need|give me|commit)[:\s]+\d+\s*min', lower)
-        or re.match(r'\d+\s*min', lower)
+    # Commitment timer: "I need 5 min", "give me 20 mins", "15 min", "commit 10 min"
+    # Also matches when embedded in longer messages like "give me 5 mins to finalize".
+    if (
+        re.search(r'\b(?:i need|give me|commit)[:\s]+\d+\s*min(?:utes?|s)?\b', lower)
+        or re.match(r'\d+\s*min(?:utes?|s)?\b', lower)
     ):
         return Intent.COMMIT
 

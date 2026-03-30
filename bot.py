@@ -108,6 +108,12 @@ class EFABot(discord.Client):
                 self.clock.multiplier if isinstance(self.clock, DebugClock) else 1.0,
             )
 
+        # Guard: on_ready() can fire multiple times on Discord reconnect.
+        # Only create the scheduler once to prevent duplicate job firings.
+        if self._scheduler is not None:
+            log.warning("on_ready() called again — scheduler already running, skipping.")
+            return
+
         self._scheduler = Scheduler(
             config=self.config,
             get_send_fn=self._get_channel_send,

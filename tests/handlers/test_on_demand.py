@@ -548,14 +548,14 @@ def test_detect_intent_commit_not_triggered_by_done():
     assert detect_intent("done: the report") != Intent.COMMIT
 
 
-def test_detect_intent_commit_not_triggered_by_long_message():
-    # Long multi-part messages mentioning "I need N min" incidentally should NOT be COMMIT
+def test_detect_intent_commit_in_long_message():
+    # "I need N min" in a longer message should still trigger COMMIT —
+    # the user naturally embeds timer requests in context.
     long_msg = (
-        "ok, I have about 30 mins now; I need to:\n"
-        "send out invite to Schilling with the location\n"
-        "I need 5 mins to send out the invite to Schilling"
+        "I need to cleanup the CV and cover letter, then apply for the job. "
+        "Give me 5 mins to finalize, start timer."
     )
-    assert detect_intent(long_msg) == Intent.GENERAL
+    assert detect_intent(long_msg) == Intent.COMMIT
 
 
 def test_detect_intent_commit_extracts_mins_not_first_number():
