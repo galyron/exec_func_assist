@@ -98,17 +98,27 @@ class StateManager:
         await self.save_state(state)
 
     async def get_daily(self) -> DailyState:
-        state = await self.load_state()
+        state = await self._ensure_rollover()
         return state["daily"]
 
     async def update_daily(self, **kwargs) -> None:
         """Update one or more fields in the daily state."""
-        state = await self.load_state()
+        state = await self._ensure_rollover()
         for key, value in kwargs.items():
             if key not in DailyState.__annotations__:
                 raise KeyError(f"Unknown daily state field: {key!r}")
             state["daily"][key] = value  # type: ignore[literal-required]
         await self.save_state(state)
+
+    async def _ensure_rollover(self) -> BotState:
+        """Load state and roll over daily if the date has changed."""
+        state = await self.load_state()
+        today = self._today_str()
+        if state["daily"]["date"] != today:
+            log.info("Date changed (%s → %s) — rolling over daily state.",
+                     state["daily"]["date"], today)
+            await self._rollover_daily(state, today)
+        return state
 
     async def has_previous_daily(self) -> bool:
         state = await self.load_state()

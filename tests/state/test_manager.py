@@ -196,3 +196,38 @@ async def test_no_tmp_file_left_after_write(manager):
     await manager.initialize()
     tmp_file = manager._state_path.with_suffix(".tmp")
     assert not tmp_file.exists()
+
+
+# ── Automatic rollover on access (no restart needed) ─────────────────────────
+
+async def test_get_daily_rolls_over_on_date_change(tmp_path):
+    """get_daily() should auto-rollover when the clock date changes, even without restart."""
+    clock = make_clock("2026-03-23")
+    mgr = StateManager(data_dir=tmp_path, clock=clock)
+    await mgr.initialize()
+    await mgr.update_daily(off_today=True, morning_complete=True)
+
+    # Advance the clock to the next day (same manager instance, no restart)
+    clock._start_sim = datetime(2026, 3, 24, 9, 0, tzinfo=TZ)
+
+    daily = await mgr.get_daily()
+    assert daily["date"] == "2026-03-24"
+    assert daily["off_today"] is False  # reset
+    assert daily["morning_complete"] is False  # reset
+
+
+async def test_update_daily_rolls_over_on_date_change(tmp_path):
+    """update_daily() should auto-rollover before applying the update."""
+    clock = make_clock("2026-03-23")
+    mgr = StateManager(data_dir=tmp_path, clock=clock)
+    await mgr.initialize()
+    await mgr.update_daily(off_today=True)
+
+    # Advance the clock
+    clock._start_sim = datetime(2026, 3, 24, 9, 0, tzinfo=TZ)
+
+    await mgr.update_daily(declared_energy="high")
+    daily = await mgr.get_daily()
+    assert daily["date"] == "2026-03-24"
+    assert daily["off_today"] is False  # rolled over, not carried
+    assert daily["declared_energy"] == "high"  # today's update applied

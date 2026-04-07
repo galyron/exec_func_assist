@@ -77,7 +77,7 @@ _HELP_TEXT = """**EVA — Quick Reference**
 > `done: <task>` — mark a task as done in Joplin
 > `add: <task>` — add a new task to Joplin inbox
 > `schedule: <event>` — add a Google Calendar event
-> `I need 20 min` / `give me 15 min` / `20 min` — set a commitment timer
+> `I need 20 min` / `give me 15 min` / `check back in 15 min` / `remind me in 30 min` — set a timer
 > `done` / `finished` — mark current task done, cancel timer
 > `stuck` / `struggling` — get unstuck help + timer picker
 > `skip` — skip current suggestion
@@ -121,10 +121,12 @@ def detect_intent(text: str) -> Intent:
     if lower.startswith("add:") or lower.startswith("add :"):
         return Intent.ADD_TASK
 
-    # Commitment timer: "I need 5 min", "give me 20 mins", "15 min", "commit 10 min"
-    # Also matches when embedded in longer messages like "give me 5 mins to finalize".
+    # Commitment timer: "I need 5 min", "give me 20 mins", "15 min", "commit 10 min",
+    # "check back in 15 min", "remind me in 30 min", "I need another 10 min", "timer 20 min"
     if (
-        re.search(r'\b(?:i need|give me|commit)[:\s]+\d+\s*min(?:utes?|s)?\b', lower)
+        re.search(r'\b(?:i need|give me)(?:\s+\w+)?\s+\d+\s*min(?:utes?|s)?\b', lower)
+        or re.search(r'\bcommit[:\s]+\d+\s*min(?:utes?|s)?\b', lower)
+        or re.search(r'\b(?:check back|remind me|timer)\s+(?:in\s+)?\d+\s*min(?:utes?|s)?\b', lower)
         or re.match(r'\d+\s*min(?:utes?|s)?\b', lower)
     ):
         return Intent.COMMIT
@@ -291,12 +293,24 @@ class OnDemandHandler(BaseHandler):
 
     async def _handle_commit(self, text: str, send_fn: SendFn) -> None:
         """Parse a time commitment and schedule a check-back timer."""
-        # Use the same patterns as detect_intent so we extract from the right match:
-        # "i need 17 min...", "give me 20 min...", "commit: 25 min...", or "17 min..."
+        # Extract minutes from various patterns:
+        # "i need 17 min", "give me 20 min", "commit: 25 min",
+        # "check back in 15 min", "remind me in 30 min", "timer 20 min",
+        # "I need another 10 min", or bare "17 min"
         match = re.search(
-            r'(?:i need|give me|commit)[:\s]+(\d+)\s*(?:min(?:utes?|s)?)',
+            r'(?:i need|give me)(?:\s+\w+)?\s+(\d+)\s*(?:min(?:utes?|s)?)',
             text, re.IGNORECASE,
         )
+        if not match:
+            match = re.search(
+                r'commit[:\s]+(\d+)\s*(?:min(?:utes?|s)?)',
+                text, re.IGNORECASE,
+            )
+        if not match:
+            match = re.search(
+                r'(?:check back|remind me|timer)\s+(?:in\s+)?(\d+)\s*(?:min(?:utes?|s)?)',
+                text, re.IGNORECASE,
+            )
         if not match:
             # Bare "17 min" at start of message
             match = re.match(r'(\d+)\s*(?:min(?:utes?|s)?)', text.strip(), re.IGNORECASE)
@@ -309,10 +323,19 @@ class OnDemandHandler(BaseHandler):
             await send_fn("Timer must be between 1 and 240 minutes.")
             return
 
-        # Extract task: text after the matched time spec, following "to" or "for"
+        # Extract task: text after the matched time spec.
+        # Handles "to X", "for X", ": X", or "— X" separators after the duration.
         after_match = text[match.end():]
-        task_after = re.match(r'\s+(?:to|for)\s+(.+)', after_match, re.IGNORECASE | re.DOTALL)
-        task = task_after.group(1).strip().split('\n')[0].strip() if task_after else ""
+        task_after = re.match(
+            r'\s*[:\-—]+\s*(.+)|'       # ": escalate avis" or "— do X"
+            r'\s+(?:to|for)\s+(.+)',     # "to finalize" or "for the task"
+            after_match, re.IGNORECASE | re.DOTALL,
+        )
+        if task_after:
+            task = (task_after.group(1) or task_after.group(2) or "").strip().split('\n')[0].strip()
+        else:
+            # Check for task specified BEFORE the duration: "remind me in 30 min" preceded by context
+            task = ""
 
         # Fall back to last_suggestion if no explicit task given
         if not task:

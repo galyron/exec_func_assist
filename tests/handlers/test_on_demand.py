@@ -612,3 +612,55 @@ async def test_handle_commit_rejects_out_of_range(handler, followup_handler):
     await handler.handle("I need 500 minutes", send_fn)
     msg = send_fn.call_args[0][0]
     assert "240" in msg or "between" in msg.lower()
+
+
+# ── detect_intent: COMMIT — new patterns ────────────────────────────────────
+
+def test_detect_intent_commit_check_back_in():
+    assert detect_intent("check back in 15 mins") == Intent.COMMIT
+
+def test_detect_intent_commit_check_back_in_minutes():
+    assert detect_intent("check back in 30 minutes") == Intent.COMMIT
+
+def test_detect_intent_commit_remind_me_in():
+    assert detect_intent("remind me in 30 mins") == Intent.COMMIT
+
+def test_detect_intent_commit_remind_me_in_with_task():
+    assert detect_intent("remind me in 30 mins: escalate avis") == Intent.COMMIT
+
+def test_detect_intent_commit_remind_me_in_45():
+    assert detect_intent("Let's try again: remind me in 45 mins") == Intent.COMMIT
+
+def test_detect_intent_commit_i_need_another():
+    assert detect_intent("I need another 15 mins to fix it") == Intent.COMMIT
+
+def test_detect_intent_commit_timer():
+    assert detect_intent("timer 20 min") == Intent.COMMIT
+
+
+# ── _handle_commit: new patterns ────────────────────────────────────────────
+
+async def test_handle_commit_check_back_in(handler, followup_handler):
+    send_fn = AsyncMock()
+    with patch.object(followup_handler, "schedule", new=AsyncMock()) as mock_schedule:
+        await handler.handle("check back in 15 mins", send_fn)
+    mock_schedule.assert_called_once()
+    assert mock_schedule.call_args[1]["minutes"] == 15
+
+
+async def test_handle_commit_remind_me_with_task(handler, followup_handler):
+    send_fn = AsyncMock()
+    with patch.object(followup_handler, "schedule", new=AsyncMock()) as mock_schedule:
+        await handler.handle("remind me in 30 mins: escalate avis", send_fn)
+    mock_schedule.assert_called_once()
+    assert mock_schedule.call_args[1]["minutes"] == 30
+    task = mock_schedule.call_args[0][0]
+    assert "escalate avis" in task.lower()
+
+
+async def test_handle_commit_i_need_another(handler, followup_handler):
+    send_fn = AsyncMock()
+    with patch.object(followup_handler, "schedule", new=AsyncMock()) as mock_schedule:
+        await handler.handle("I need another 15 mins to fix it", send_fn)
+    mock_schedule.assert_called_once()
+    assert mock_schedule.call_args[1]["minutes"] == 15
