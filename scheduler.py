@@ -1,7 +1,7 @@
 """C14 — Scheduler.
 
 Registers all timed jobs with APScheduler AsyncIOScheduler.
-All jobs: coalesce=True, max_instances=1, misfire_grace_time=300s.
+All jobs: coalesce=True, max_instances=1, misfire_grace_time=5s.
 
 Weekend suppression is built into CronTrigger day_of_week filters rather
 than runtime checks — the scheduler simply doesn't fire work-mode jobs
@@ -22,6 +22,7 @@ from handlers.bedtime import BedtimeHandler
 from handlers.checkin import CheckinHandler, CheckinType
 from handlers.kickoff import KickoffHandler
 from handlers.morning import MorningRoutineHandler
+from handlers.nudge import NudgeHandler
 
 log = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class Scheduler:
         kickoff_handler: KickoffHandler,
         checkin_handler: CheckinHandler,
         bedtime_handler: BedtimeHandler,
+        nudge_handler: Optional[NudgeHandler] = None,
     ) -> None:
         self._config = config
         self._get_send_fn = get_send_fn
@@ -56,6 +58,7 @@ class Scheduler:
         self._kickoff = kickoff_handler
         self._checkin = checkin_handler
         self._bedtime = bedtime_handler
+        self._nudge = nudge_handler
         self._tz = ZoneInfo(config.timezone)
         self._scheduler = AsyncIOScheduler(timezone=self._tz)
 
@@ -90,6 +93,7 @@ class Scheduler:
             "evening":  lambda: self._checkin.fire(CheckinType.EVENING, effective),
             "eod":      lambda: self._bedtime.fire_end_of_day(effective),
             "bedtime":  lambda: self._bedtime.fire_bedtime(effective),
+            "nudge":    lambda: self._fire_nudge(),
         }
         fn = handlers.get(name)
         if fn is None:
@@ -148,6 +152,21 @@ class Scheduler:
                   CronTrigger(hour=h, minute=m, day_of_week="mon-sun", timezone=tz),
                   self._fire_bedtime)
 
+        # Periodic nudge — every 30 min during work + general + recovery hours (weekdays)
+        # Runs from work_start to bedtime; the NudgeHandler itself checks mode,
+        # free windows, cooldown, and off_today before actually sending.
+        if self._nudge is not None:
+            ws_h, ws_m = _hhmm(cfg.work_start)
+            bt_h, bt_m = _hhmm(cfg.bedtime)
+            self._add("nudge",
+                      CronTrigger(
+                          minute="*/30",
+                          hour=f"{ws_h}-{bt_h}",
+                          day_of_week="mon-fri",
+                          timezone=tz,
+                      ),
+                      self._fire_nudge)
+
     def _add(self, job_id: str, trigger: CronTrigger, func: Callable) -> None:
         self._scheduler.add_job(
             func,
@@ -202,6 +221,14 @@ class Scheduler:
             await self._bedtime.fire_bedtime(send_fn)
         else:
             log.warning("bedtime fired but Discord channel unavailable — skipped.")
+
+    async def _fire_nudge(self) -> None:
+        if self._nudge is None:
+            return
+        if send_fn := self._get_send_fn():
+            await self._nudge.fire(send_fn)
+        else:
+            log.warning("nudge fired but Discord channel unavailable — skipped.")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

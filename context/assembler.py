@@ -122,6 +122,8 @@ class ContextAssembler:
         tasks: list[Task],
         events: list[CalendarEvent],
         interactions: list[Interaction],
+        *,
+        calendar_failed: bool = False,
     ) -> AssembledContext:
         """Assemble context from pre-fetched data and current state.
 
@@ -152,6 +154,7 @@ class ContextAssembler:
             interactions=interactions,
             daily=daily,
             config=self._config,
+            calendar_failed=calendar_failed,
         )
 
         return AssembledContext(
@@ -183,6 +186,7 @@ def _format_context(
     interactions: list[Interaction],
     daily: DailyState,
     config: Config,
+    calendar_failed: bool = False,
 ) -> str:
     weekday = now.strftime("%A")
     date_str = now.strftime("%Y-%m-%d")
@@ -195,6 +199,10 @@ def _format_context(
 
     # Calendar
     lines.append("TODAY'S CALENDAR")
+    if calendar_failed:
+        lines.append("  ⚠ CALENDAR UNAVAILABLE — could not fetch events from Google Calendar.")
+        lines.append("  Do NOT assume the calendar is empty. Tell the user calendar sync is broken")
+        lines.append("  and do not recommend specific time windows.")
     timed = [e for e in events if not e.is_all_day]
     all_day = [e for e in events if e.is_all_day]
     if all_day or timed:
@@ -254,6 +262,17 @@ def _format_context(
             if len(content) > 200:
                 content = content[:200] + "…"
             lines.append(f"  [{ts}] {direction}: {content}")
+        lines.append("")
+
+    # Active reminders
+    reminders = daily.get("reminders") or []
+    if reminders:
+        lines.append("ACTIVE REMINDERS")
+        for r in reminders:
+            fire_at = r.get("fire_at", "")
+            if "T" in fire_at:
+                fire_at = fire_at.split("T")[1][:5]
+            lines.append(f"  [{fire_at}] {r.get('text', '?')}")
         lines.append("")
 
     # State

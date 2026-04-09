@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from connectors.calendar import CalendarConnector
     from connectors.joplin import JoplinConnector
     from handlers.followup import FollowupHandler
+    from handlers.reminder import ReminderHandler
     from scheduler import Scheduler
 
 log = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ class Intent(str, Enum):
     SKIP = "skip"
     ADD_TASK = "add_task"
     ADD_EVENT = "add_event"
+    REMINDER = "reminder"
     COMMIT = "commit"
     USE_OPUS = "use_opus"
     TRIGGER = "trigger"
@@ -56,6 +58,7 @@ _TRIGGER_ALIASES: dict[str, str] = {
     "eod":          "eod",
     "end of day":   "eod",
     "bedtime":      "bedtime",
+    "nudge":        "nudge",
     "help":         "help",
 }
 
@@ -77,6 +80,9 @@ _HELP_TEXT = """**EVA — Quick Reference**
 > `done: <task>` — mark a task as done in Joplin
 > `add: <task>` — add a new task to Joplin inbox
 > `schedule: <event>` — add a Google Calendar event
+> `remind me at 14:30 about X` / `reminder 21:30: X` — set a timed reminder
+> `remind me tomorrow at 09:45: X` — reminder for tomorrow
+> `remind me on friday at 13:00: X` — reminder for a specific day
 > `I need 20 min` / `give me 15 min` / `check back in 15 min` / `remind me in 30 min` — set a timer
 > `done` / `finished` — mark current task done, cancel timer
 > `stuck` / `struggling` — get unstuck help + timer picker
@@ -120,6 +126,18 @@ def detect_intent(text: str) -> Intent:
 
     if lower.startswith("add:") or lower.startswith("add :"):
         return Intent.ADD_TASK
+
+    # Timed reminder: "remind me at 14:30 about X", "reminder 21:30: X",
+    # "remind me tomorrow at 09:45: X", "remind me on friday at 13:00: X"
+    # Must come BEFORE COMMIT check since "remind me in 30 min" is COMMIT.
+    if re.match(
+        r'remind(?:er|(?:\s+me))?\s+'
+        r'(?:(?:tomorrow|on\s+\w+)\s+)?'
+        r'(?:at\s+)?'
+        r'\d{1,2}[:.]\d{2}',
+        lower,
+    ):
+        return Intent.REMINDER
 
     # Commitment timer: "I need 5 min", "give me 20 mins", "15 min", "commit 10 min",
     # "check back in 15 min", "remind me in 30 min", "I need another 10 min", "timer 20 min"
@@ -168,6 +186,7 @@ class OnDemandHandler(BaseHandler):
         followup_handler: FollowupHandler,
         joplin: "JoplinConnector | None" = None,
         calendar: "CalendarConnector | None" = None,
+        reminder_handler: "ReminderHandler | None" = None,
     ) -> None:
         super().__init__(config, state_manager, clock)
         self._llm = llm_client
@@ -175,6 +194,7 @@ class OnDemandHandler(BaseHandler):
         self._followup = followup_handler
         self._joplin = joplin
         self._calendar = calendar
+        self._reminder = reminder_handler
         self._scheduler: Scheduler | None = None
 
     def set_scheduler(self, scheduler: Scheduler) -> None:
@@ -202,6 +222,8 @@ class OnDemandHandler(BaseHandler):
             await self._handle_add_task(text, send_fn)
         elif intent == Intent.ADD_EVENT:
             await self._handle_add_event(text, send_fn)
+        elif intent == Intent.REMINDER:
+            await self._handle_reminder(text, send_fn)
         elif intent == Intent.COMMIT:
             await self._handle_commit(text, send_fn)
         elif intent == Intent.USE_OPUS:
@@ -491,6 +513,35 @@ class OnDemandHandler(BaseHandler):
         date_label = start_dt.strftime("%A %d %b")
         time_label = f"{start_dt.strftime('%H:%M')}–{end_dt.strftime('%H:%M')}"
         msg = f"Added to calendar: **{title}** — {date_label} {time_label}"
+        await send_fn(msg)
+        await self._log_user(text)
+        await self._log_bot(msg)
+
+    async def _handle_reminder(self, text: str, send_fn: SendFn) -> None:
+        """Parse a timed reminder and schedule it via ReminderHandler."""
+        if self._reminder is None:
+            await send_fn("Reminder system not available.")
+            return
+
+        from zoneinfo import ZoneInfo
+        from handlers.reminder import parse_reminder
+
+        tz = ZoneInfo(self._config.timezone)
+        result = parse_reminder(text, self._clock.now(), tz)
+        if result is None:
+            # Couldn't parse — fall through to general LLM handler
+            await self._handle_general(text, send_fn)
+            return
+
+        reminder_text, fire_at = result
+        await self._reminder.schedule(reminder_text, fire_at)
+        time_label = fire_at.strftime("%H:%M")
+        date_label = fire_at.strftime("%A %d %b")
+        today = self._clock.now().date()
+        if fire_at.date() == today:
+            msg = f"Reminder set for **{time_label}** today: {reminder_text}"
+        else:
+            msg = f"Reminder set for **{date_label} {time_label}**: {reminder_text}"
         await send_fn(msg)
         await self._log_user(text)
         await self._log_bot(msg)

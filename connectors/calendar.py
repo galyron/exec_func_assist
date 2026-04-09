@@ -52,6 +52,8 @@ class CalendarConnector:
         self._tz = ZoneInfo(timezone)
         self._excluded = set(excluded_calendar_ids)
         self._min_gap_min = min_gap_min
+        self.last_fetch_failed: bool = False
+        self._last_error: str = ""
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -59,12 +61,16 @@ class CalendarConnector:
         """Return all events for the given date (default: today), sorted by start time.
 
         Returns [] on connector failure so the bot degrades gracefully.
+        Sets self.last_fetch_failed so callers can tell the LLM that data is missing.
         """
         try:
             events = await asyncio.to_thread(self._fetch_events, target)
+            self.last_fetch_failed = False
             return sorted(events, key=lambda e: e.start)
         except Exception as exc:
             log.warning("Calendar connector failed: %s", exc)
+            self.last_fetch_failed = True
+            self._last_error = str(exc)
             return []
 
     async def get_free_windows(

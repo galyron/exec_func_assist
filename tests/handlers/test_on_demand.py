@@ -529,6 +529,34 @@ async def test_handle_add_event_markdown_json_stripped(handler_with_calendar, ca
     calendar.create_event.assert_called_once()
 
 
+# ── detect_intent: REMINDER ───────────────────────────────────────────────────
+
+def test_intent_reminder_at_time():
+    assert detect_intent("remind me at 14:30 about Hofstetter") == Intent.REMINDER
+
+def test_intent_reminder_dot_time():
+    assert detect_intent("remind me at 14.30 about something") == Intent.REMINDER
+
+def test_intent_reminder_colon_separator():
+    assert detect_intent("remind me at 21:30: call Philipp") == Intent.REMINDER
+
+def test_intent_reminder_tomorrow():
+    assert detect_intent("remind me tomorrow at 09:45: check kondensatpumpe") == Intent.REMINDER
+
+def test_intent_reminder_on_day():
+    assert detect_intent("remind me on friday at 13:00: auto damage follow-up") == Intent.REMINDER
+
+def test_intent_reminder_shorthand():
+    assert detect_intent("reminder 14:30 talk to Miriam") == Intent.REMINDER
+
+def test_intent_remind_in_is_commit_not_reminder():
+    """'remind me in 30 min' is a COMMIT timer, not a timed reminder."""
+    assert detect_intent("remind me in 30 min") == Intent.COMMIT
+
+def test_intent_remind_in_with_task_is_commit():
+    assert detect_intent("remind me in 30 mins: escalate avis") == Intent.COMMIT
+
+
 # ── detect_intent: COMMIT ─────────────────────────────────────────────────────
 
 def test_detect_intent_commit_i_need():

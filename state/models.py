@@ -25,6 +25,9 @@ class DailyState(TypedDict):
     last_suggested_task_id: Optional[str]  # Joplin task id of last suggested task (for auto-done)
     commitment_minutes: Optional[int]   # duration of current commitment timer (None = not set)
     morning_retry_sent: bool            # True once fire_retry has fired — prevents duplicate sends
+    reminders: list[dict[str, Any]]     # active timed reminders [{id, text, fire_at, created_at}]
+    reminder_counter: int               # monotonic counter for unique reminder job IDs
+    last_nudge_ts: Optional[str]        # ISO datetime of last proactive nudge (for cooldown)
 
 
 class PreviousDailyState(TypedDict):
@@ -88,6 +91,9 @@ def default_daily_state(date_str: str) -> DailyState:
         last_suggested_task_id=None,
         commitment_minutes=None,
         morning_retry_sent=False,
+        reminders=[],
+        reminder_counter=0,
+        last_nudge_ts=None,
     )
 
 

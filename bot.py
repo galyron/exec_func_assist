@@ -27,7 +27,9 @@ from handlers.checkin import CheckinHandler
 from handlers.followup import FollowupHandler
 from handlers.kickoff import KickoffHandler
 from handlers.morning import MorningRoutineHandler
+from handlers.nudge import NudgeHandler
 from handlers.on_demand import OnDemandHandler
+from handlers.reminder import ReminderHandler
 from llm.client import LLMClient
 from scheduler import Scheduler
 from state.manager import StateManager
@@ -64,6 +66,8 @@ class EFABot(discord.Client):
         bedtime_handler: BedtimeHandler,
         on_demand_handler: OnDemandHandler,
         followup_handler: FollowupHandler,
+        nudge_handler: NudgeHandler,
+        reminder_handler: ReminderHandler,
         *,
         debug: bool = False,
     ) -> None:
@@ -83,6 +87,8 @@ class EFABot(discord.Client):
         self.bedtime_handler = bedtime_handler
         self.on_demand_handler = on_demand_handler
         self.followup_handler = followup_handler
+        self.nudge_handler = nudge_handler
+        self.reminder_handler = reminder_handler
         self.debug = debug
         self._scheduler: Scheduler | None = None
 
@@ -121,9 +127,11 @@ class EFABot(discord.Client):
             kickoff_handler=self.kickoff_handler,
             checkin_handler=self.checkin_handler,
             bedtime_handler=self.bedtime_handler,
+            nudge_handler=self.nudge_handler,
         )
         self._scheduler.start()
         self.followup_handler.set_apscheduler(self._scheduler._scheduler)
+        self.reminder_handler.set_apscheduler(self._scheduler._scheduler)
         self.on_demand_handler.set_scheduler(self._scheduler)
 
     async def close(self) -> None:
@@ -225,7 +233,10 @@ def _build_bot(args: argparse.Namespace, config, clock: Clock) -> EFABot:
             calendar.get_events(),
             state.get_recent_interactions(20),
         )
-        return await assembler.assemble(tasks, events, interactions)
+        return await assembler.assemble(
+            tasks, events, interactions,
+            calendar_failed=calendar.last_fetch_failed,
+        )
 
     morning = MorningRoutineHandler(
         config=config, state_manager=state, clock=clock,
@@ -247,21 +258,31 @@ def _build_bot(args: argparse.Namespace, config, clock: Clock) -> EFABot:
         config=config, state_manager=state, clock=clock,
         get_send_fn=lambda: None,  # overwritten below once bot is constructed
     )
+    reminder = ReminderHandler(
+        config=config, state_manager=state, clock=clock,
+        get_send_fn=lambda: None,  # overwritten below once bot is constructed
+    )
+    nudge = NudgeHandler(
+        config=config, state_manager=state, clock=clock,
+        llm_client=llm, context_builder=build_context,
+    )
     on_demand = OnDemandHandler(
         config=config, state_manager=state, clock=clock,
         llm_client=llm, context_builder=build_context,
         followup_handler=followup, joplin=joplin, calendar=calendar,
+        reminder_handler=reminder,
     )
 
     bot = EFABot(
         config, state, clock,
         joplin, calendar, assembler, llm,
         morning, kickoff, checkin, bedtime,
-        on_demand, followup,
+        on_demand, followup, nudge, reminder,
         debug=args.debug,
     )
-    # Wire followup's channel-send getter to the live bot instance
+    # Wire followup's and reminder's channel-send getter to the live bot instance
     followup._get_send_fn = bot._get_channel_send
+    reminder._get_send_fn = bot._get_channel_send
     return bot
 
 

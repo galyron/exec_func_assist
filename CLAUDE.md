@@ -8,10 +8,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **exec_func_assist** (EVA) is a Discord-based executive function assistant bot backed by the Claude API. It sends proactive structured check-ins, task suggestions, and energy-aware nudges throughout the day. The full spec is in `exec_function_assistant_spec_v0.3.md`. Architecture decisions are in `DECISIONS.md`. The phased build plan is in `PLAN.md`.
 
-**Implementation status:** Phases 1 and 2-B are complete. The bot is fully operational: connectors (including Joplin write-back and Calendar event creation), context assembler, LLM client (multi-turn), all scheduled handlers (C8–C11, C14), on-demand routing (C12), follow-up scheduling (C13), and commitment timers are all working.
+**Implementation status:** Phases 1 and 2-B are complete. The bot is fully operational: connectors (including Joplin write-back and Calendar event creation), context assembler, LLM client (single-turn), all scheduled handlers (C8–C11, C14), on-demand routing (C12), follow-up scheduling (C13), commitment timers, timed reminders (C15), and periodic nudges (C14-N) are all working.
 
 **Remaining gaps:**
-- Joplin + Calendar background polling jobs are described in C14 but not yet added to `scheduler.py` (connectors are called on-demand per LLM request only).
 - C17 (Cost Tracker): spend tracking and cap enforcement are in `llm/client.py`, but Discord warning messages at 80% and 100% cap are not yet sent.
 - Debug mode enhancements planned (print LLM payloads, suppress @mentions) are not implemented.
 
@@ -86,7 +85,7 @@ python setup_calendar.py
 
 **Joplin network note:** Joplin's REST API only binds to `127.0.0.1` inside its container. The entrypoint runs Joplin on internal port 41185 and uses `socat` to forward `0.0.0.0:41184 → 127.0.0.1:41185` so the bot can reach it via Docker DNS (`http://joplin:41184`).
 
-**Prod deploy:** `./deploy.sh` → SSH to mbox (`~/services/exec_func_assist`) → explicit `docker compose stop eva-bot-prod` → `git pull` → `up -d --build`. The explicit stop before rebuild prevents overlapping containers (both would connect to Discord and fire scheduled jobs simultaneously). Each deploy appends a timestamped entry to `deploy.log` on mbox. The prod override sets `restart: always` and removes host port binding for Joplin.
+**Prod deploy:** `./deploy.sh` → SSH to mbox (`~/services/exec_func_assist`) → explicit `docker compose stop bot` → `git pull` → `up -d --build`. The explicit stop before rebuild prevents overlapping containers (both would connect to Discord and fire scheduled jobs simultaneously). Each deploy appends a timestamped entry to `deploy.log` on mbox. The prod override sets `restart: always` and removes host port binding for Joplin.
 
 ---
 
@@ -108,10 +107,11 @@ Discord message ──▶ EFABot._handle_message()
                                   │                          │
                                   │                     LLMClient (C6) ──▶ Discord reply
                                   │
-                                  └─ FollowupHandler (C13) ──▶ APScheduler date job
+                                  ├─ FollowupHandler (C13) ──▶ APScheduler date job
+                                  └─ ReminderHandler (C15) ──▶ APScheduler date jobs (multiple)
 
 APScheduler ──▶ Scheduler (C14) fires:
-  MorningRoutineHandler / KickoffHandler / CheckinHandler / BedtimeHandler
+  MorningRoutineHandler / KickoffHandler / CheckinHandler / BedtimeHandler / NudgeHandler
 ```
 
 Every LLM call: fetch tasks + events + recent interactions → assemble context string (including factual exchange log) → single-turn send to Claude → post response to Discord. Interactions are summarised as structured facts in the context string, NOT passed as separate API turns — this prevents tone contamination from prior soft-mode responses.
@@ -126,7 +126,7 @@ Every LLM call: fetch tasks + events + recent interactions → assemble context 
 
 **`connectors/joplin.py` (C3)** — Reads and writes Joplin via REST API. Two read sources: standalone todo notes (`is_todo=1`) and unchecked checklist items in regular note bodies. Tags extracted via `_TAG_RULES`. Write operations: `create_task(title)` appends a checklist item to the configured inbox note (`todo_inbox_note`, default `"99 - added by eva"`); `mark_done(task)` patches the checklist item from `- [ ]` to `- [x]`. Returns `[]` / gracefully degrades on failure.
 
-**`connectors/calendar.py` (C4)** — Enumerates all selected calendars via `calendarList.list` (not just `primary`). Fetches events per calendar. Pure function `compute_free_windows()` computes free time slots. `create_event(title, start, end, calendar_id)` creates a Google Calendar event. Excluded calendars configured via `excluded_calendar_ids` in `config.json`.
+**`connectors/calendar.py` (C4)** — Enumerates all selected calendars via `calendarList.list` (not just `primary`). Fetches events per calendar. Pure function `compute_free_windows()` computes free time slots. `create_event(title, start, end, calendar_id)` creates a Google Calendar event. Excluded calendars configured via `excluded_calendar_ids` in `config.json`. `last_fetch_failed` flag is set after each `get_events()` call — `True` on connector failure, `False` on success. Passed through to the context assembler so the LLM context warns "CALENDAR UNAVAILABLE" instead of silently showing empty.
 
 **`context/assembler.py` (C5)** — Pure functions `determine_mode()` and `determine_energy()` are module-level (testable without class). `ContextAssembler.assemble()` takes pre-fetched data and returns `AssembledContext` with a formatted `text` field ready for the LLM. Timed calendar events are labelled `[past]`, `[now]`, or `[upcoming]` relative to `clock.now()` so the LLM cannot confuse an event's start time with the current time.
 
@@ -148,11 +148,15 @@ Every LLM call: fetch tasks + events + recent interactions → assemble context 
 
 **`handlers/bedtime.py` (C11)** — `fire_end_of_day()` generates an LLM micro-review from `interactions.json` (skipped if `off_today`). `fire_bedtime()` sends a fixed message (only skipped if `off_today_full_silence`).
 
-**`handlers/on_demand.py` (C12)** — Module-level `detect_intent(text) -> Intent` pure function (testable without class). Intents: `OFF_TODAY`, `FINISHED`, `DONE_TASK`, `STUCK`, `SKIP`, `ADD_TASK`, `ADD_EVENT`, `COMMIT`, `USE_OPUS`, `TRIGGER`, `GENERAL`. Key behaviours: FINISHED and STUCK use `re.match` (start-of-message only) to avoid false positives on natural sentences; DONE_TASK requires explicit `done:` prefix (with colon) or Discord buttons — no implicit matching; COMMIT matches `"I need N min"`, `"give me N min"`, `"check back in N min"`, `"remind me in N min"`, `"I need another N min"`, `"timer N min"`, bare `"N min"` — sets a user-defined APScheduler timer; STUCK calls LLM then shows `TimerPickerView` (no auto-schedule); FINISHED cancels any pending timer. `set_scheduler()` called post-construction.
+**`handlers/on_demand.py` (C12)** — Module-level `detect_intent(text) -> Intent` pure function (testable without class). Intents: `OFF_TODAY`, `FINISHED`, `DONE_TASK`, `STUCK`, `SKIP`, `ADD_TASK`, `ADD_EVENT`, `REMINDER`, `COMMIT`, `USE_OPUS`, `TRIGGER`, `GENERAL`. Key behaviours: FINISHED and STUCK use `re.match` (start-of-message only) to avoid false positives on natural sentences; DONE_TASK requires explicit `done:` prefix (with colon) or Discord buttons — no implicit matching; COMMIT matches `"I need N min"`, `"give me N min"`, `"check back in N min"`, `"remind me in N min"`, `"I need another N min"`, `"timer N min"`, bare `"N min"` — sets a user-defined APScheduler timer; STUCK calls LLM then shows `TimerPickerView` (no auto-schedule); FINISHED cancels any pending timer. `set_scheduler()` called post-construction.
 
-**`scheduler.py` (C14)** — Registers all APScheduler cron jobs. All jobs: `coalesce=True`, `max_instances=1`, `misfire_grace_time=60`. **Every `CronTrigger` must have `timezone=tz` explicitly** — the scheduler's timezone does NOT propagate to triggers; omitting it causes jobs to fire on UTC (1 hour early in Europe/Berlin). Weekend suppression is via `day_of_week` on the trigger. `Scheduler.trigger(name, send_fn=None)` fires any named job manually.
+**`scheduler.py` (C14)** — Registers all APScheduler cron jobs. All jobs: `coalesce=True`, `max_instances=1`, `misfire_grace_time=5`. **Every `CronTrigger` must have `timezone=tz` explicitly** — the scheduler's timezone does NOT propagate to triggers; omitting it causes jobs to fire on UTC (1 hour early in Europe/Berlin). Weekend suppression is via `day_of_week` on the trigger. `Scheduler.trigger(name, send_fn=None)` fires any named job manually. The `nudge` job fires every 30 min from `work_start` to `bedtime` on weekdays; the `NudgeHandler` decides whether to actually send based on cooldown, free windows, etc.
 
 **`handlers/followup.py` (C13)** — `FollowupHandler` schedules a one-shot APScheduler `date` job. `schedule(suggestion, minutes=None)` — `minutes` overrides `config.followup_delay_min` (default 20); stores `commitment_minutes` in state so `_fire()` shows the actual committed time. `handle_timer_set(suggestion, minutes, send_fn)` — called by `TimerPickerView` buttons. `TimerPickerView` (public) — Discord UI offering [10 / 20 / 30 / 45 min / No timer] buttons, attached to STUCK responses. `cancel()` silently tolerates missing job or absent scheduler.
+
+**`handlers/reminder.py` (C15)** — `ReminderHandler` manages user-requested timed reminders. Each reminder becomes a unique APScheduler `date` job (multiple concurrent reminders supported). `schedule(text, run_at)` creates a job; `cancel(job_id)` / `cancel_all()` remove them. Active reminders are stored in `daily_state["reminders"]` and surfaced in the LLM context string. `parse_reminder(text, now, tz)` is a module-level pure function that extracts time and text from patterns like "remind me at 14:30 about X", "remind me tomorrow at 09:45: X", "remind me on friday at 13:00: X". Intent detection in `on_demand.py` dispatches REMINDER intent before COMMIT to avoid "remind me at HH:MM" being swallowed by "remind me in N min".
+
+**`handlers/nudge.py` (C14-N)** — `NudgeHandler` fires every 30 minutes during work hours via a cron job in `scheduler.py`. Before sending, it checks: `off_today`, weekend, nudge cooldown (`nudge_cooldown_min`), recent bot messages, active commitment timers, and (in WORK mode) whether `now` falls within a calendar free window. In GENERAL and RECOVERY modes, free window check is skipped. Records `last_nudge_ts` in daily state.
 
 ### Mode Determination (weekdays)
 
