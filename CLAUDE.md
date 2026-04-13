@@ -18,74 +18,47 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Common Commands
 
-**Run all tests:**
 ```sh
+# Run all tests
 python -m pytest tests/ -q
-```
 
-**Run a single test file:**
-```sh
+# Run a single test file
 python -m pytest tests/connectors/test_joplin.py -q
-```
 
-**Run a single test by name:**
-```sh
+# Run a single test by name
 python -m pytest tests/context/test_assembler.py -k "test_mode_weekend" -q
-```
 
-**Start the full stack (dev):**
-```sh
+# Start the full stack (dev)
 docker compose up
-```
 
-**Rebuild and restart:**
-```sh
+# Rebuild and restart
 docker compose up --build
-```
 
-**Verify connectors (stack must be running):**
-```sh
+# Verify connectors (stack must be running)
 docker compose run --rm bot python -m connectors.joplin
 docker compose run --rm bot python -m connectors.calendar
-```
 
-**Verify context assembly + LLM end-to-end:**
-```sh
+# Verify context assembly + LLM end-to-end
 docker compose run --rm bot python -m context.assembler
 docker compose run --rm bot python -m llm.client
-```
 
-**Debug mode (time simulation):**
-```sh
+# Debug mode (time simulation — 120x = 1 real second ≈ 2 simulated minutes)
 docker compose run --rm bot python bot.py --debug --debug-time "2026-03-24 07:25" --debug-multiplier 120
-```
 
-**One-time Google Calendar OAuth setup (run on MacBook, needs browser):**
-```sh
+# One-time Google Calendar OAuth setup (run on MacBook, needs browser)
 python setup_calendar.py
+
+# Deploy to mbox (commit + push first, then ./deploy.sh pulls on the server)
+./deploy.sh
 ```
 
 ---
 
 ## Stack
 
-| Layer | Choice | Notes |
-|-------|--------|-------|
-| Language | Python 3.12 | Matches Ubuntu 24.10 on mbox |
-| Bot framework | `discord.py` 2.x | Buttons, embeds, @mentions |
-| Scheduler | `APScheduler` `AsyncIOScheduler` | Runs within the bot's asyncio event loop |
-| LLM | Anthropic Python SDK | Sonnet default (`claude-sonnet-4-6`); Opus on demand |
-| Joplin | `aiohttp` → `http://joplin:41184` | Joplin CLI in Docker; read + limited write (inbox append, mark done) |
-| Calendar | Google Calendar API v3 | OAuth2, `calendar.readonly` + `calendar.events` (write) |
-| State | JSON files + `aiofiles` | **Not SQLite.** `state.json`, `interactions.json`, `memory.json` |
-| Deployment | Docker Compose | Same `docker-compose.yml` for dev (MacBook) and prod (mbox) |
-| Timezone | `Europe/Berlin` | All scheduling and time logic |
+Python 3.12 · `discord.py` 2.x · APScheduler `AsyncIOScheduler` · Anthropic Python SDK (Sonnet default, Opus on demand) · `aiohttp` for Joplin REST API · Google Calendar API v3 · JSON state files + `aiofiles` · Docker Compose · Timezone: `Europe/Berlin`.
 
-**Services:** `eva-bot-dev` (bot container), `eva-joplin-dev` (Joplin CLI + socat forwarder).
-
-**Joplin network note:** Joplin's REST API only binds to `127.0.0.1` inside its container. The entrypoint runs Joplin on internal port 41185 and uses `socat` to forward `0.0.0.0:41184 → 127.0.0.1:41185` so the bot can reach it via Docker DNS (`http://joplin:41184`).
-
-**Prod deploy:** `./deploy.sh` → SSH to mbox (`~/services/exec_func_assist`) → explicit `docker compose stop bot` → `git pull` → `up -d --build`. The explicit stop before rebuild prevents overlapping containers (both would connect to Discord and fire scheduled jobs simultaneously). Each deploy appends a timestamped entry to `deploy.log` on mbox. The prod override sets `restart: always` and removes host port binding for Joplin.
+Two Docker services: `eva-bot-dev` (bot) and `eva-joplin-dev` (Joplin CLI + socat forwarder). Joplin binds to `127.0.0.1` inside its container; `socat` forwards `0.0.0.0:41184 → 127.0.0.1:41185` so the bot reaches it via Docker DNS at `http://joplin:41184`.
 
 ---
 
@@ -116,47 +89,44 @@ APScheduler ──▶ Scheduler (C14) fires:
 
 Every LLM call: fetch tasks + events + recent interactions → assemble context string (including factual exchange log) → single-turn send to Claude → post response to Discord. Interactions are summarised as structured facts in the context string, NOT passed as separate API turns — this prevents tone contamination from prior soft-mode responses.
 
-### Key Modules
+### Critical Wiring Pattern
 
-**`config.py` (C1)** — Frozen `Config` dataclass. Loads secrets from `.env`, settings from `config.json`. Raises `ConfigError` on missing values. `config.json` is committed (no secrets); `.env` is gitignored. Notable optional field: `security_alerts_channel_id` (Discord channel for unauthorized-message alerts; `null` = log-only).
+Adding a new handler requires changes in multiple files due to deliberate circular-dependency avoidance:
 
-**`state/manager.py` (C2)** — `StateManager`: async read/write for three JSON files. Writes are atomic (`.tmp` → rename). Daily rollover (archives `daily` → `previous_daily`) happens automatically on every `get_daily()` / `update_daily()` call when the clock date changes — no restart needed. Key methods: `get_daily()`, `update_daily(**kwargs)`, `append_interaction()`, `get_recent_interactions(n)`, `has_previous_daily()`.
+1. **Create the handler** in `handlers/` extending `BaseHandler`.
+2. **Instantiate it** in `bot.py` → `_build_bot()`. If it needs `channel.send`, pass `get_send_fn=lambda: None` initially.
+3. **Wire the send function** after `EFABot` is constructed: `handler._get_send_fn = bot._get_channel_send`.
+4. **If it uses APScheduler**, call `handler.set_apscheduler(self._scheduler._scheduler)` in `EFABot.on_ready()` (the scheduler isn't available until then).
+5. **If it has a cron job**, register it in `scheduler.py` → `_register_jobs()`. Remember: **every `CronTrigger` must have `timezone=tz` explicitly** — the scheduler's timezone does NOT propagate to triggers; omitting it causes jobs to fire on UTC.
+6. **If it has an intent**, add it to `on_demand.py` → `Intent` enum, `detect_intent()`, and `handle()` dispatch.
 
-**`connectors/models.py`** — Shared output types: `Task`, `CalendarEvent`, `FreeWindow`. These are the contract between connectors and `ContextAssembler`. New calendar sources only need to produce these types.
+### Key Modules — What's Non-Obvious
 
-**`connectors/joplin.py` (C3)** — Reads and writes Joplin via REST API. Two read sources: standalone todo notes (`is_todo=1`) and unchecked checklist items in regular note bodies. Tags extracted via `_TAG_RULES`. Write operations: `create_task(title)` appends a checklist item to the configured inbox note (`todo_inbox_note`, default `"99 - added by eva"`); `mark_done(task)` patches the checklist item from `- [ ]` to `- [x]`. Returns `[]` / gracefully degrades on failure.
+**`bot.py`** — `on_message` has three branches in strict order: (1) monitor-only channels from `config.monitor_channels` — security check with per-channel allowlist (owner is always implicitly authorized), **never routed to LLM**; (2) authorization check against `discord_user_id` — unknown authors trigger `_alert_unauthorized()` which posts to `security_alerts_channel_id`; (3) DM or `discord_channel_id` filter. Discord bots receive every message in every readable channel — filtering happens at the application layer, so **ordering matters**. Reordering these branches changes who gets alerted where.
 
-**`connectors/calendar.py` (C4)** — Enumerates all selected calendars via `calendarList.list` (not just `primary`). Fetches events per calendar. Pure function `compute_free_windows()` computes free time slots. `create_event(title, start, end, calendar_id)` creates a Google Calendar event. Excluded calendars configured via `excluded_calendar_ids` in `config.json`. `last_fetch_failed` flag is set after each `get_events()` call — `True` on connector failure, `False` on success. Passed through to the context assembler so the LLM context warns "CALENDAR UNAVAILABLE" instead of silently showing empty.
+**`config.py` (C1)** — Frozen `Config` dataclass. `config.json` is committed (no secrets); `.env` is gitignored.
 
-**`context/assembler.py` (C5)** — Pure functions `determine_mode()` and `determine_energy()` are module-level (testable without class). `ContextAssembler.assemble()` takes pre-fetched data and returns `AssembledContext` with a formatted `text` field ready for the LLM. Timed calendar events are labelled `[past]`, `[now]`, or `[upcoming]` relative to `clock.now()` so the LLM cannot confuse an event's start time with the current time.
+**`state/manager.py` (C2)** — Atomic writes (`.tmp` → rename). Daily rollover happens automatically on every `get_daily()` / `update_daily()` call when the clock date changes.
 
-**`llm/client.py` (C6)** — `LLMClient.send()` selects Sonnet/Opus based on session state, tracks monthly spend in `state.json`, enforces `monthly_cost_limit_usd`. Opus auto-reverts after `opus_session_max_messages`. **Single-turn model:** each call sends one `user` message with the full context string (tasks, calendar, factual exchange log) in the system prompt. No multi-turn API history — this is deliberate to prevent tone contamination across mode transitions.
+**`connectors/calendar.py` (C4)** — `last_fetch_failed` flag is set after each `get_events()` call. Passed through to the context assembler so the LLM context warns "CALENDAR UNAVAILABLE" instead of silently showing empty. Silent failures were a real production issue — the LLM gave bad time-window advice when it thought the calendar was empty.
 
-**`llm/prompts.py`** — System prompts keyed by `Mode` enum. Tone is a first-class feature. **Hardcoded trigger strings inside each handler (`fire()`, `fire_end_of_day()`, etc.) are equally load-bearing** — they are the user-turn instruction that shapes the LLM output. If you change tone, update both `prompts.py` AND the trigger strings in the relevant handler. The end-of-day trigger includes `clock.now()` date+time explicitly to prevent day-of-week hallucination.
+**`context/assembler.py` (C5)** — `determine_mode()` and `determine_energy()` are module-level pure functions (testable without class). `assemble()` takes pre-fetched data + `calendar_failed` flag. Events are labelled `[past]`, `[now]`, or `[upcoming]` relative to `clock.now()`.
 
-**`utils/clock.py` (C16)** — `Clock` abstraction. `RealClock` for production; `DebugClock` for time-simulation (configurable multiplier). **Nothing calls `datetime.now()` directly** — always use `clock.now()`.
+**`llm/client.py` (C6)** — **Single-turn model:** each call sends one `user` message with full context in the system prompt. No multi-turn API history. This is deliberate — prevents tone contamination across mode transitions.
 
-**`bot.py` (C7)** — `EFABot(discord.Client)`. Both channel and DM messages enter `_handle_message()`. Morning routine takes priority when active; all other messages route through `OnDemandHandler`. `_build_bot()` factory wires all handlers; `on_ready()` injects APScheduler into `FollowupHandler` after the scheduler starts (avoids circular dependency). `on_message` enforces `discord_user_id` — all other authors are silently dropped and optionally reported to `security_alerts_channel_id` via `_alert_unauthorized()`.
+**`llm/prompts.py`** — System prompts keyed by `Mode` enum. **Hardcoded trigger strings inside each handler (`fire()`, `fire_end_of_day()`, etc.) are equally load-bearing** — they are the user-turn instruction that shapes the LLM output. If you change tone, update both `prompts.py` AND the trigger strings in the relevant handler. The end-of-day trigger includes `clock.now()` date+time explicitly to prevent day-of-week hallucination.
 
-**`handlers/base.py`** — `BaseHandler` superclass. Provides `_log_bot(msg)` and `_log_user(msg)` for interaction logging, plus the `SendFn` type alias. All handlers extend this.
+**`utils/clock.py` (C16)** — `Clock` abstraction. `RealClock` for production; `DebugClock` for time-simulation. **Nothing calls `datetime.now()` directly** — always use `clock.now()`.
 
-**`handlers/morning.py` (C8)** — Stateful multi-turn morning interview. `fire()` / `fire_retry()` for scheduled triggers; `handle_response()` for user replies; `is_active()` to check routing priority.
+**`handlers/on_demand.py` (C12)** — `detect_intent()` is a pure function with **order-sensitive matching**. Critical ordering: REMINDER ("`remind me at 14:30`") must be checked BEFORE COMMIT ("`remind me in 30 min`") — both start with "remind me" but mean different things. FINISHED and STUCK use `re.match` (start-of-message only) to avoid false positives. DONE_TASK requires explicit `done:` prefix (with colon).
 
-**`handlers/kickoff.py` (C9)** — Sends the LLM-generated day briefing at `work_start`.
+**`scheduler.py` (C14)** — All cron jobs: `coalesce=True`, `max_instances=1`, `misfire_grace_time=5`. The `nudge` job fires every 30 min from `work_start` to `bedtime` on weekdays; `NudgeHandler` decides whether to actually send based on cooldown, free windows, etc.
 
-**`handlers/checkin.py` (C10)** — Parameterised by `CheckinType` (MIDDAY / EVENING). `fire(type, send_fn)` sends LLM message + `_CheckinView` buttons. `handle_text_response()` accepts typed equivalents.
+**`handlers/reminder.py` (C15)** — Multiple concurrent reminders via unique APScheduler job IDs. `parse_reminder()` is a module-level pure function. Reminders stored in `daily_state["reminders"]` and surfaced in LLM context. `misfire_grace_time=300` (5 min, vs 5s for cron jobs) — reminders are more important to deliver.
 
-**`handlers/bedtime.py` (C11)** — `fire_end_of_day()` generates an LLM micro-review from `interactions.json` (skipped if `off_today`). `fire_bedtime()` sends a fixed message (only skipped if `off_today_full_silence`).
+**`handlers/nudge.py` (C14-N)** — Before sending, checks: `off_today`, weekend, nudge cooldown, recent bot messages, active commitment timers, and (in WORK mode only) whether `now` falls within a calendar free window. In GENERAL/RECOVERY modes, free window check is skipped. Records `last_nudge_ts` in daily state.
 
-**`handlers/on_demand.py` (C12)** — Module-level `detect_intent(text) -> Intent` pure function (testable without class). Intents: `OFF_TODAY`, `FINISHED`, `DONE_TASK`, `STUCK`, `SKIP`, `ADD_TASK`, `ADD_EVENT`, `REMINDER`, `COMMIT`, `USE_OPUS`, `TRIGGER`, `GENERAL`. Key behaviours: FINISHED and STUCK use `re.match` (start-of-message only) to avoid false positives on natural sentences; DONE_TASK requires explicit `done:` prefix (with colon) or Discord buttons — no implicit matching; COMMIT matches `"I need N min"`, `"give me N min"`, `"check back in N min"`, `"remind me in N min"`, `"I need another N min"`, `"timer N min"`, bare `"N min"` — sets a user-defined APScheduler timer; STUCK calls LLM then shows `TimerPickerView` (no auto-schedule); FINISHED cancels any pending timer. `set_scheduler()` called post-construction.
-
-**`scheduler.py` (C14)** — Registers all APScheduler cron jobs. All jobs: `coalesce=True`, `max_instances=1`, `misfire_grace_time=5`. **Every `CronTrigger` must have `timezone=tz` explicitly** — the scheduler's timezone does NOT propagate to triggers; omitting it causes jobs to fire on UTC (1 hour early in Europe/Berlin). Weekend suppression is via `day_of_week` on the trigger. `Scheduler.trigger(name, send_fn=None)` fires any named job manually. The `nudge` job fires every 30 min from `work_start` to `bedtime` on weekdays; the `NudgeHandler` decides whether to actually send based on cooldown, free windows, etc.
-
-**`handlers/followup.py` (C13)** — `FollowupHandler` schedules a one-shot APScheduler `date` job. `schedule(suggestion, minutes=None)` — `minutes` overrides `config.followup_delay_min` (default 20); stores `commitment_minutes` in state so `_fire()` shows the actual committed time. `handle_timer_set(suggestion, minutes, send_fn)` — called by `TimerPickerView` buttons. `TimerPickerView` (public) — Discord UI offering [10 / 20 / 30 / 45 min / No timer] buttons, attached to STUCK responses. `cancel()` silently tolerates missing job or absent scheduler.
-
-**`handlers/reminder.py` (C15)** — `ReminderHandler` manages user-requested timed reminders. Each reminder becomes a unique APScheduler `date` job (multiple concurrent reminders supported). `schedule(text, run_at)` creates a job; `cancel(job_id)` / `cancel_all()` remove them. Active reminders are stored in `daily_state["reminders"]` and surfaced in the LLM context string. `parse_reminder(text, now, tz)` is a module-level pure function that extracts time and text from patterns like "remind me at 14:30 about X", "remind me tomorrow at 09:45: X", "remind me on friday at 13:00: X". Intent detection in `on_demand.py` dispatches REMINDER intent before COMMIT to avoid "remind me at HH:MM" being swallowed by "remind me in N min".
-
-**`handlers/nudge.py` (C14-N)** — `NudgeHandler` fires every 30 minutes during work hours via a cron job in `scheduler.py`. Before sending, it checks: `off_today`, weekend, nudge cooldown (`nudge_cooldown_min`), recent bot messages, active commitment timers, and (in WORK mode) whether `now` falls within a calendar free window. In GENERAL and RECOVERY modes, free window check is skipped. Records `last_nudge_ts` in daily state.
+**`handlers/followup.py` (C13)** — Single follow-up timer (one at a time, `replace_existing=True`). `TimerPickerView` is public — used by both STUCK handler and externally.
 
 ### Mode Determination (weekdays)
 
@@ -190,6 +160,7 @@ Full rationale in `DECISIONS.md`. Do not re-open without flagging explicitly.
 - **User's name is `Gabriell` (two l's)** — stored in `config.json` as `user_name`.
 - **Monthly Anthropic API spend cap: `$10` default**, configurable as `monthly_cost_limit_usd`.
 - **`secrets/` is gitignored.** Contains `google_token.json`, `google_client_secret.json`, and `pre_implementation_checklist.md`. `config.json` is committed (no secrets).
+- **Server-wide security alerts.** The bot listens on every channel it can read in the EVAS server (that's how Discord bots work) and alerts to `security_alerts_channel_id` when a non-owner posts. Channels listed in `monitor_channels` get a per-channel allowlist and are never routed to the LLM — used for scratch/interop channels (e.g., `#claude_general` with ClaMoT) that should be silent to EVA but still protected from strangers.
 
 ---
 
@@ -205,7 +176,7 @@ Full rationale in `DECISIONS.md`. Do not re-open without flagging explicitly.
 
 **`"off today"`** suppresses all proactive messages for the day (bedtime reminder still fires unless `"full silence"`).
 
-**Nudge cooldown:** 45 min minimum between unsolicited messages. Calendar gap must be ≥ 30 min to trigger a nudge.
+**Nudge cooldown:** 45 min minimum between unsolicited messages. Calendar gap must be ≥ 30 min to trigger a nudge. Periodic nudge fires every 30 min during work hours; also during GENERAL/RECOVERY without free-window gating.
 
 **Tone (first-class feature — this is the single most important design element):**
 
@@ -226,8 +197,14 @@ All modes use this style. There is no mode where EVA is "gentle" or "understandi
 
 ## Testing
 
-Tests use `pytest-asyncio`. Async test functions work without `@pytest.mark.asyncio` — check `pytest.ini` or `pyproject.toml` for `asyncio_mode = auto`.
+Tests use `pytest-asyncio` with `asyncio_mode = auto` (in `pytest.ini`). Async test functions work without `@pytest.mark.asyncio`.
 
-Connectors are always mocked in unit tests — no live API calls. `compute_free_windows()` and `determine_mode()`/`determine_energy()` are pure functions tested exhaustively without mocks.
+Connectors are always mocked in unit tests — no live API calls. Pure functions (`compute_free_windows`, `determine_mode`, `determine_energy`, `detect_intent`, `parse_reminder`) are tested exhaustively without mocks.
 
-The `conftest.py` in `tests/` sets up shared fixtures.
+Test pattern: `_make_daily(**overrides)` fixture builds a valid `DailyState` dict with sensible defaults. `_make_context()` builds an `AssembledContext`. Both are local to each test file. `conftest.py` in `tests/` is minimal.
+
+---
+
+## Deploy
+
+`./deploy.sh` → SSH to mbox → explicit `docker compose stop bot` (prevents overlapping containers — both would connect to Discord and fire scheduled jobs) → `git pull` → `up -d --build`. The prod override sets `restart: always` and removes host port binding for Joplin. Each deploy appends a timestamped entry to `deploy.log` on mbox.
