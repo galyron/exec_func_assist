@@ -29,5 +29,9 @@
   "opus_session_max_messages": 10,
 
   "weekend_evening_nudge": true,
-  "low_energy_tags": ["[low-energy]", "[couch]", "[easy]"]
+  "low_energy_tags": ["[low-energy]", "[couch]", "[easy]"],
+
+  "monitor_channels": {
+    "1493196719024898168": [1493187179768316014]
+  }
 }

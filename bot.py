@@ -143,6 +143,18 @@ class EFABot(discord.Client):
         if message.author == self.user:
             return
 
+        # Monitor-only channels: security check with per-channel allowlist,
+        # never routed to the LLM.
+        if isinstance(message.channel, discord.TextChannel):
+            monitor_allowlist = self.config.monitor_channels.get(message.channel.id)
+            if monitor_allowlist is not None:
+                if (
+                    message.author.id != self.config.discord_user_id
+                    and message.author.id not in monitor_allowlist
+                ):
+                    await self._alert_unauthorized(message)
+                return
+
         if message.author.id != self.config.discord_user_id:
             await self._alert_unauthorized(message)
             return

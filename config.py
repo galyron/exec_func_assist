@@ -68,6 +68,11 @@ class Config:
     # Google Calendar IDs to exclude from all event fetching.
     # Run: docker compose exec bot python -m connectors.calendar  to list all IDs.
     excluded_calendar_ids: list[str] = field(default_factory=list)
+    # Channels where Eva only runs security checks (no LLM routing, no replies).
+    # Maps channel_id → list of user IDs additionally allowed to post there
+    # without triggering a security alert. The owner (discord_user_id) is
+    # always implicitly authorized.
+    monitor_channels: dict[int, list[int]] = field(default_factory=dict)
 
 
 class ConfigError(Exception):
@@ -140,6 +145,7 @@ def load_config(
             weekend_evening_nudge=raw.get("weekend_evening_nudge", True),
             low_energy_tags=raw.get("low_energy_tags", ["[low-energy]", "[couch]", "[easy]"]),
             excluded_calendar_ids=raw.get("excluded_calendar_ids", []),
+            monitor_channels=_parse_monitor_channels(raw.get("monitor_channels", {})),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ConfigError(f"Invalid config.json: {exc}") from exc
@@ -162,6 +168,25 @@ def _require_str(raw: dict, key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ConfigError(f"config.json: {key!r} must be a non-empty string.")
     return value
+
+
+def _parse_monitor_channels(raw: object) -> dict[int, list[int]]:
+    if not isinstance(raw, dict):
+        raise ConfigError("config.json: 'monitor_channels' must be an object.")
+    result: dict[int, list[int]] = {}
+    for channel_key, user_ids in raw.items():
+        try:
+            channel_id = int(channel_key)
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(
+                f"config.json: monitor_channels key {channel_key!r} must be an integer channel ID."
+            ) from exc
+        if not isinstance(user_ids, list) or not all(isinstance(u, int) for u in user_ids):
+            raise ConfigError(
+                f"config.json: monitor_channels[{channel_id}] must be a list of integer user IDs."
+            )
+        result[channel_id] = list(user_ids)
+    return result
 
 
 def _require_int(raw: dict, key: str) -> int:

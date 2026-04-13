@@ -32,5 +32,8 @@
   "low_energy_tags": ["[low-energy]", "[couch]", "[easy]"],
 
   "_excluded_comment": "Run 'docker compose exec bot python -m connectors.calendar' to list all calendar IDs.",
-  "excluded_calendar_ids": []
+  "excluded_calendar_ids": [],
+
+  "_monitor_channels_comment": "Channels where Eva only runs security checks (no LLM routing). Map channel_id (as string) → list of user IDs allowed to post there without triggering an alert. The owner (discord_user_id) is always implicitly authorized.",
+  "monitor_channels": {}
 }
