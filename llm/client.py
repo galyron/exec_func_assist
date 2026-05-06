@@ -82,7 +82,9 @@ class LLMClient:
             return _FALLBACK_MESSAGE
 
         model = self._select_model(state)
-        system_base = system_override or get_system_prompt(context.mode)
+        system_base = system_override or get_system_prompt(
+            context.mode, adhd_active=context.adhd_active
+        )
         # Single-turn: context (tasks, calendar, exchange log) in system prompt,
         # one user message. No multi-turn history — prevents tone contamination.
         system = f"{system_base}\n\n{context.text}"

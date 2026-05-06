@@ -56,6 +56,9 @@ class Config:
     min_gap_for_nudge_min: int
     followup_default_min: int
 
+    # ── ADHD mode ─────────────────────────────────────────────────────────
+    adhd_default_ceiling_min: int
+
     # ── Cost ──────────────────────────────────────────────────────────────
     monthly_cost_limit_usd: float
 
@@ -140,6 +143,7 @@ def load_config(
             nudge_cooldown_min=raw.get("nudge_cooldown_min", 45),
             min_gap_for_nudge_min=raw.get("min_gap_for_nudge_min", 30),
             followup_default_min=raw.get("followup_default_min", 20),
+            adhd_default_ceiling_min=raw.get("adhd_default_ceiling_min", 45),
             monthly_cost_limit_usd=float(raw.get("monthly_cost_limit_usd", 10.0)),
             opus_session_max_messages=raw.get("opus_session_max_messages", 10),
             weekend_evening_nudge=raw.get("weekend_evening_nudge", True),

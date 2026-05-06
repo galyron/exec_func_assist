@@ -42,6 +42,9 @@ class Intent(str, Enum):
     ADD_EVENT = "add_event"
     REMINDER = "reminder"
     COMMIT = "commit"
+    CEILING = "ceiling"
+    ADHD_ON = "adhd_on"
+    ADHD_OFF = "adhd_off"
     USE_OPUS = "use_opus"
     TRIGGER = "trigger"
     GENERAL = "general"
@@ -130,6 +133,13 @@ def detect_intent(text: str) -> Intent:
     if re.search(r"<use_opus>", lower):
         return Intent.USE_OPUS
 
+    # ADHD mode toggles. Match exact `/adhd` and `/normal` (with optional trailing
+    # whitespace/punctuation) so they don't collide with other slash patterns.
+    if re.match(r"/adhd\b", lower):
+        return Intent.ADHD_ON
+    if re.match(r"/normal\b", lower):
+        return Intent.ADHD_OFF
+
     if lower.startswith("off today"):
         return Intent.OFF_TODAY
 
@@ -143,6 +153,11 @@ def detect_intent(text: str) -> Intent:
 
     if lower.startswith("add:") or lower.startswith("add :"):
         return Intent.ADD_TASK
+
+    # `ceiling: <minutes>` — hard-stop timer. Distinct from `commit` (soft check-in)
+    # and from `<task> done` (write-back). Refuses extensions when fired.
+    if re.match(r"ceiling\s*:\s*\d+", lower):
+        return Intent.CEILING
 
     # Timed reminder: "remind me at 14:30 about X", "reminder 21:30: X",
     # "remind me tomorrow at 09:45: X", "remind me on friday at 13:00: X"
@@ -249,6 +264,12 @@ class OnDemandHandler(BaseHandler):
             await self._handle_reminder(text, send_fn)
         elif intent == Intent.COMMIT:
             await self._handle_commit(text, send_fn)
+        elif intent == Intent.CEILING:
+            await self._handle_ceiling(text, send_fn)
+        elif intent == Intent.ADHD_ON:
+            await self._handle_adhd_on(send_fn)
+        elif intent == Intent.ADHD_OFF:
+            await self._handle_adhd_off(send_fn)
         elif intent == Intent.USE_OPUS:
             await self._handle_use_opus(send_fn)
         else:
@@ -323,6 +344,12 @@ class OnDemandHandler(BaseHandler):
         await self._log_bot(msg)
 
     async def _handle_stuck(self, send_fn: SendFn) -> None:
+        # Auto-activate ADHD mode if not already active.
+        # Stuck is the canonical overwhelm trigger and benefits from the
+        # response-shape compression (3-sentence cap, option-deletion).
+        daily = await self._state.get_daily()
+        if not daily.get("adhd_mode_active"):
+            await self._activate_adhd("stuck")
         ctx = await self._build_context()
         trigger = (
             f"{self._config.user_name} says they're stuck. "
@@ -338,6 +365,12 @@ class OnDemandHandler(BaseHandler):
 
     async def _handle_commit(self, text: str, send_fn: SendFn) -> None:
         """Parse a time commitment and schedule a check-back timer."""
+        # Post-ceiling guard: if the ADHD ceiling has already fired, refuse
+        # extensions until the user explicitly types `/normal` or the day rolls.
+        if await self._is_post_ceiling():
+            await self._refuse_post_ceiling_extension(text, send_fn)
+            return
+
         # Extract minutes from various patterns:
         # "i need 17 min", "give me 20 min", "commit: 25 min",
         # "check back in 15 min", "remind me in 30 min", "timer 20 min",
@@ -592,8 +625,164 @@ class OnDemandHandler(BaseHandler):
         await self._log_bot(msg)
 
     async def _handle_general(self, text: str, send_fn: SendFn) -> None:
+        # Late-night ADHD override: after end_of_day_review (default 22:30),
+        # free-form messages get a sleep redirect instead of an LLM call.
+        # Write-back shortcuts (done:, add:, schedule:, ceiling:, /adhd, /normal)
+        # already routed elsewhere by detect_intent — they keep working.
+        if await self._is_late_night_adhd():
+            now = self._clock.now()
+            msg = (
+                f"It's {now.strftime('%H:%M')}. Sleep is the highest-leverage "
+                f"action available. Goodnight, {self._config.user_name}."
+            )
+            await send_fn(msg)
+            await self._log_user(text)
+            await self._log_bot(msg)
+            return
+
         ctx = await self._build_context()
         response = await self._llm.send(ctx, text)
         await send_fn(response)
         await self._log_user(text)
         await self._log_bot(response)
+
+    # ── ADHD mode handlers ────────────────────────────────────────────────────
+
+    async def _handle_adhd_on(self, send_fn: SendFn) -> None:
+        """Manual `/adhd` shortcut — flip the flag and start the ceiling."""
+        daily = await self._state.get_daily()
+        if daily.get("adhd_mode_active"):
+            ceiling_iso = daily.get("adhd_block_ceiling_at")
+            label = ""
+            if ceiling_iso:
+                from datetime import datetime
+                try:
+                    label = f" Ceiling at {datetime.fromisoformat(ceiling_iso).strftime('%H:%M')}."
+                except ValueError:
+                    pass
+            msg = f"Already in ADHD mode.{label}"
+            await send_fn(msg)
+            await self._log_bot(msg)
+            return
+
+        ceiling_minutes = await self._activate_adhd("manual")
+        from datetime import timedelta
+        at_time = (self._clock.now() + timedelta(minutes=ceiling_minutes)).strftime("%H:%M")
+        msg = (
+            f"ADHD mode on — ceiling at {at_time} ({ceiling_minutes} min). "
+            f"One action at a time. `/normal` to exit."
+        )
+        await send_fn(msg)
+        await self._log_bot(msg)
+
+    async def _handle_adhd_off(self, send_fn: SendFn) -> None:
+        """Manual `/normal` shortcut — clear the flag and cancel the ceiling."""
+        daily = await self._state.get_daily()
+        if not daily.get("adhd_mode_active"):
+            msg = "Not in ADHD mode."
+            await send_fn(msg)
+            await self._log_bot(msg)
+            return
+
+        # Close out the open activation log entry.
+        activations = list(daily.get("adhd_activations") or [])
+        if activations and activations[-1].get("ended_at") is None:
+            activations[-1]["ended_at"] = self._clock.now().isoformat()
+            activations[-1]["end_reason"] = "manual"
+        await self._state.update_daily(
+            adhd_mode_active=False,
+            adhd_block_started_at=None,
+            adhd_block_ceiling_at=None,
+            adhd_activations=activations,
+        )
+        self._followup.cancel_ceiling()
+
+        msg = "ADHD mode off."
+        await send_fn(msg)
+        await self._log_bot(msg)
+
+    async def _handle_ceiling(self, text: str, send_fn: SendFn) -> None:
+        """Standalone `ceiling: <minutes>` shortcut. Hard-stop, refuses extensions."""
+        match = re.match(r"ceiling\s*:\s*(\d+)\s*(?:min(?:utes?|s)?)?\s*(.*)$", text.strip(), re.IGNORECASE)
+        if not match:
+            await send_fn("Usage: `ceiling: <minutes>` (e.g. `ceiling: 45`).")
+            return
+        minutes = int(match.group(1))
+        if not 1 <= minutes <= 240:
+            await send_fn("Ceiling must be between 1 and 240 minutes.")
+            return
+        task = match.group(2).strip().lstrip(":-—,").strip() or ""
+
+        await self._followup.schedule_ceiling(minutes, task=task)
+        from datetime import timedelta
+        at_time = (self._clock.now() + timedelta(minutes=minutes)).strftime("%H:%M")
+        task_label = f" for {task}" if task else ""
+        msg = (
+            f"Ceiling set — {minutes} min{task_label}. Hard stop at {at_time}. "
+            f"No extensions."
+        )
+        await send_fn(msg)
+        await self._log_user(text)
+        await self._log_bot(msg)
+
+    # ── ADHD helpers ──────────────────────────────────────────────────────────
+
+    async def _activate_adhd(self, trigger: str) -> int:
+        """Set the ADHD flag, append an activation log entry, schedule the ceiling.
+
+        Returns the ceiling duration in minutes (so callers can craft the reply).
+        """
+        now = self._clock.now()
+        ceiling_minutes = self._config.adhd_default_ceiling_min
+        from datetime import timedelta
+        ceiling_at = now + timedelta(minutes=ceiling_minutes)
+
+        daily = await self._state.get_daily()
+        activations = list(daily.get("adhd_activations") or [])
+        activations.append({
+            "started_at": now.isoformat(),
+            "trigger": trigger,
+            "ceiling_at": ceiling_at.isoformat(),
+            "ended_at": None,
+            "end_reason": None,
+        })
+        await self._state.update_daily(
+            adhd_mode_active=True,
+            adhd_activations=activations,
+        )
+        # schedule_ceiling writes adhd_block_started_at / adhd_block_ceiling_at.
+        await self._followup.schedule_ceiling(ceiling_minutes)
+        log.info("ADHD mode activated (trigger=%s, ceiling=%d min)", trigger, ceiling_minutes)
+        return ceiling_minutes
+
+    async def _is_post_ceiling(self) -> bool:
+        """True if the ADHD ceiling has fired and not yet been cleared."""
+        daily = await self._state.get_daily()
+        if not daily.get("adhd_mode_active"):
+            return False
+        ceiling_iso = daily.get("adhd_block_ceiling_at")
+        if not ceiling_iso:
+            return False
+        from datetime import datetime
+        try:
+            return self._clock.now() > datetime.fromisoformat(ceiling_iso)
+        except ValueError:
+            return False
+
+    async def _refuse_post_ceiling_extension(self, text: str, send_fn: SendFn) -> None:
+        msg = "No. Ceiling exists because you don't stop without it. Close the laptop."
+        await send_fn(msg)
+        await self._log_user(text)
+        await self._log_bot(msg)
+
+    async def _is_late_night_adhd(self) -> bool:
+        """True if ADHD mode is active AND we're past end_of_day_review."""
+        daily = await self._state.get_daily()
+        if not daily.get("adhd_mode_active"):
+            return False
+        from datetime import time
+        h, m = self._config.end_of_day_review.split(":")
+        threshold = time(int(h), int(m))
+        now_t = self._clock.now().time()
+        # Late-night window: from end_of_day_review until midnight rollover.
+        return now_t >= threshold

@@ -51,6 +51,7 @@ class AssembledContext:
     recent_interactions: list[Interaction]
     daily_state: DailyState
     text: str               # formatted context string for the LLM
+    adhd_active: bool = False  # ADHD-mode overlay flag (drives prompt suffix)
 
 
 # ── Pure helpers ──────────────────────────────────────────────────────────────
@@ -169,6 +170,7 @@ class ContextAssembler:
             recent_interactions=interactions,
             daily_state=daily,
             text=text,
+            adhd_active=bool(daily.get("adhd_mode_active", False)),
         )
 
 
@@ -283,6 +285,25 @@ def _format_context(
         lines.append("  Off today: YES — suppress all proactive messages")
     if daily.get("last_suggestion"):
         lines.append(f"  Last suggestion: \"{daily['last_suggestion']}\"")
+    if daily.get("adhd_mode_active"):
+        ceiling_iso = daily.get("adhd_block_ceiling_at")
+        if ceiling_iso:
+            from datetime import datetime as _dt
+            try:
+                ceiling_at = _dt.fromisoformat(ceiling_iso)
+                if ceiling_at > now:
+                    lines.append(
+                        f"  ADHD MODE: ACTIVE — ceiling at {ceiling_at.strftime('%H:%M')}"
+                    )
+                else:
+                    lines.append(
+                        f"  ADHD MODE: CEILING FIRED at {ceiling_at.strftime('%H:%M')} — "
+                        "refuse extension requests"
+                    )
+            except ValueError:
+                lines.append("  ADHD MODE: ACTIVE")
+        else:
+            lines.append("  ADHD MODE: ACTIVE")
     if not has_prior_history:
         lines.append("  Note: first session — do not reference prior days.")
     lines.append("===")

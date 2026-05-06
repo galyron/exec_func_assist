@@ -28,6 +28,13 @@ class DailyState(TypedDict):
     reminders: list[dict[str, Any]]     # active timed reminders [{id, text, fire_at, created_at}]
     reminder_counter: int               # monotonic counter for unique reminder job IDs
     last_nudge_ts: Optional[str]        # ISO datetime of last proactive nudge (for cooldown)
+    # ADHD mode (v1): a behavioral overlay on top of the time-based Mode enum.
+    # When active, prompts get an ADHD suffix that compresses response shape.
+    # See notes/adhd_mode.md for the full spec.
+    adhd_mode_active: bool
+    adhd_block_started_at: Optional[str]    # ISO datetime when the current block began
+    adhd_block_ceiling_at: Optional[str]    # ISO datetime when the ceiling watchdog fires
+    adhd_activations: list[dict[str, Any]]  # log: [{started_at, trigger, ceiling_at, ended_at, end_reason}]
 
 
 class PreviousDailyState(TypedDict):
@@ -94,6 +101,10 @@ def default_daily_state(date_str: str) -> DailyState:
         reminders=[],
         reminder_counter=0,
         last_nudge_ts=None,
+        adhd_mode_active=False,
+        adhd_block_started_at=None,
+        adhd_block_ceiling_at=None,
+        adhd_activations=[],
     )
 
 

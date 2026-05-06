@@ -25,6 +25,8 @@
   "min_gap_for_nudge_min": 30,
   "followup_default_min": 20,
 
+  "adhd_default_ceiling_min": 45,
+
   "monthly_cost_limit_usd": 10.0,
   "opus_session_max_messages": 10,
 

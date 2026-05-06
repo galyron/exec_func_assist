@@ -21,6 +21,7 @@ from utils.clock import Clock
 log = logging.getLogger(__name__)
 
 _JOB_ID = "followup"
+_CEILING_JOB_ID = "ceiling"
 
 
 class FollowupHandler(BaseHandler):
@@ -101,6 +102,82 @@ class FollowupHandler(BaseHandler):
             log.info("Follow-up cancelled.")
         except JobLookupError:
             pass
+
+    # ── Hard ceiling (ADHD mode + standalone `ceiling:` shortcut) ─────────────
+
+    async def schedule_ceiling(self, minutes: int, task: str = "") -> None:
+        """Schedule a hard-stop ceiling. Refuses extensions when fired.
+
+        Used by ADHD mode auto-activation and the standalone `ceiling:` shortcut.
+        Distinct job ID from regular follow-ups so they don't clobber each other.
+        """
+        from datetime import timedelta
+
+        now = self._clock.now()
+        run_at = now + timedelta(minutes=minutes)
+
+        await self._state.update_daily(
+            adhd_block_started_at=now.isoformat(),
+            adhd_block_ceiling_at=run_at.isoformat(),
+        )
+
+        if self._apscheduler is None:
+            log.warning("FollowupHandler.schedule_ceiling() called before set_apscheduler()")
+            return
+
+        self._apscheduler.add_job(
+            self._fire_ceiling,
+            trigger="date",
+            run_date=run_at,
+            id=_CEILING_JOB_ID,
+            replace_existing=True,
+            misfire_grace_time=120,
+            kwargs={"task": task, "minutes": minutes},
+        )
+        log.info(
+            "Ceiling scheduled for %s (%d min)%s",
+            run_at.strftime("%H:%M"), minutes,
+            f" task={task!r}" if task else "",
+        )
+
+    def cancel_ceiling(self) -> None:
+        """Cancel the pending ceiling, silently ignoring if absent."""
+        if self._apscheduler is None:
+            return
+        try:
+            self._apscheduler.remove_job(_CEILING_JOB_ID)
+            log.info("Ceiling cancelled.")
+        except JobLookupError:
+            pass
+
+    async def _fire_ceiling(self, task: str = "", minutes: int = 0) -> None:
+        """Called by APScheduler when the hard ceiling expires.
+
+        Sends the ceiling message. Leaves `adhd_block_ceiling_at` set (now in the
+        past) so OnDemandHandler can detect post-ceiling extension requests and
+        refuse them. The ADHD activation log entry is closed out with end_reason.
+        """
+        send_fn = self._get_send_fn()
+        if send_fn is None:
+            log.warning("FollowupHandler._fire_ceiling(): channel not available")
+            return
+
+        task_label = f" `{task}`" if task else ""
+        msg = (
+            f"{minutes}-minute block done. Stopping is the success condition. "
+            f"Continuing trades tomorrow's energy for today's task. "
+            f"Close the laptop. `done:{task_label}` or `paused:{task_label}`."
+        )
+        await send_fn(msg)
+        await self._log_bot(msg)
+
+        # Mark the most recent activation entry as ended-by-ceiling.
+        daily = await self._state.get_daily()
+        activations = list(daily.get("adhd_activations") or [])
+        if activations and activations[-1].get("ended_at") is None:
+            activations[-1]["ended_at"] = self._clock.now().isoformat()
+            activations[-1]["end_reason"] = "ceiling"
+            await self._state.update_daily(adhd_activations=activations)
 
     # ── Follow-up fire ────────────────────────────────────────────────────────
 

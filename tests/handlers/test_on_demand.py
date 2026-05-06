@@ -1,5 +1,6 @@
 """Tests for C12 — On-Demand Handler."""
 
+import re
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from zoneinfo import ZoneInfo
@@ -72,6 +73,8 @@ def _make_daily(**overrides):
         "task_queue": [], "opus_session_active": False,
         "opus_session_messages": 0, "last_suggestion": None, "last_suggestion_ts": None,
         "last_suggested_task_id": None, "commitment_minutes": None,
+        "adhd_mode_active": False, "adhd_block_started_at": None,
+        "adhd_block_ceiling_at": None, "adhd_activations": [],
     }
     base.update(overrides)
     return base
@@ -92,6 +95,8 @@ def config():
     cfg = MagicMock()
     cfg.user_name = "Gabriell"
     cfg.timezone = "Europe/Berlin"
+    cfg.adhd_default_ceiling_min = 45
+    cfg.end_of_day_review = "22:30"
     return cfg
 
 
@@ -128,6 +133,8 @@ def followup_handler():
     fh = MagicMock()
     fh.schedule = AsyncMock()
     fh.cancel = MagicMock()
+    fh.schedule_ceiling = AsyncMock()
+    fh.cancel_ceiling = MagicMock()
     return fh
 
 
@@ -766,3 +773,251 @@ async def test_handle_commit_i_need_another(handler, followup_handler):
         await handler.handle("I need another 15 mins to fix it", send_fn)
     mock_schedule.assert_called_once()
     assert mock_schedule.call_args[1]["minutes"] == 15
+
+
+# ── detect_intent: ADHD intents ───────────────────────────────────────────────
+
+def test_intent_adhd_on_slash():
+    assert detect_intent("/adhd") == Intent.ADHD_ON
+
+def test_intent_adhd_on_with_trailing():
+    assert detect_intent("/adhd today") == Intent.ADHD_ON
+
+def test_intent_adhd_off_slash():
+    assert detect_intent("/normal") == Intent.ADHD_OFF
+
+def test_intent_ceiling_with_space():
+    assert detect_intent("ceiling: 25") == Intent.CEILING
+
+def test_intent_ceiling_no_space():
+    assert detect_intent("ceiling:25") == Intent.CEILING
+
+def test_intent_ceiling_with_task():
+    assert detect_intent("ceiling: 45 min for the report") == Intent.CEILING
+
+
+# ── _handle_adhd_on ───────────────────────────────────────────────────────────
+
+async def test_handle_adhd_on_flips_flag(handler, state_manager):
+    """`/adhd` flips adhd_mode_active to True and appends an activation entry."""
+    send_fn = AsyncMock()
+    await handler.handle("/adhd", send_fn)
+    # update_daily called with adhd_mode_active=True
+    update_calls = state_manager.update_daily.call_args_list
+    assert any(call.kwargs.get("adhd_mode_active") is True for call in update_calls)
+    # An activation entry is appended
+    activation_calls = [c for c in update_calls if "adhd_activations" in c.kwargs]
+    assert activation_calls, "expected adhd_activations to be written"
+    activations = activation_calls[-1].kwargs["adhd_activations"]
+    assert len(activations) == 1
+    entry = activations[0]
+    assert entry["trigger"] == "manual"
+    assert entry["ended_at"] is None
+    assert entry["end_reason"] is None
+    assert entry["started_at"]
+    assert entry["ceiling_at"]
+
+
+async def test_handle_adhd_on_schedules_ceiling(handler, followup_handler):
+    """`/adhd` schedules the ceiling using config default minutes."""
+    await handler.handle("/adhd", AsyncMock())
+    followup_handler.schedule_ceiling.assert_awaited_once_with(45)
+
+
+async def test_handle_adhd_on_replies_without_llm(handler, llm_client):
+    """`/adhd` sends a short canned reply, no LLM call."""
+    send_fn = AsyncMock()
+    await handler.handle("/adhd", send_fn)
+    llm_client.send.assert_not_called()
+    send_fn.assert_called_once()
+    msg = send_fn.call_args[0][0]
+    assert "ADHD mode on" in msg
+    # Sentence cap: ≤3 sentences. Count terminal punctuation.
+    sentences = [s for s in re.split(r"[.!?]\s+", msg) if s.strip()]
+    assert len(sentences) <= 3, f"expected ≤3 sentences, got {len(sentences)}: {msg!r}"
+
+
+async def test_handle_adhd_on_idempotent_when_active(handler, state_manager, followup_handler):
+    """`/adhd` while already active is a no-op with an 'Already in ADHD mode' reply."""
+    state_manager.get_daily = AsyncMock(return_value=_make_daily(
+        adhd_mode_active=True,
+        adhd_block_ceiling_at="2026-03-25T10:45:00+01:00",
+    ))
+    send_fn = AsyncMock()
+    await handler.handle("/adhd", send_fn)
+    # No state mutation, no fresh ceiling scheduling
+    state_manager.update_daily.assert_not_called()
+    followup_handler.schedule_ceiling.assert_not_called()
+    msg = send_fn.call_args[0][0]
+    assert "Already in ADHD mode" in msg
+    assert "10:45" in msg
+
+
+# ── _handle_adhd_off ──────────────────────────────────────────────────────────
+
+async def test_handle_adhd_off_flips_flag_and_cancels(handler, state_manager, followup_handler):
+    """`/normal` clears the flag, cancels the ceiling, and closes the activation entry."""
+    open_entry = {
+        "started_at": "2026-03-25T09:30:00+01:00",
+        "trigger": "manual",
+        "ceiling_at": "2026-03-25T10:15:00+01:00",
+        "ended_at": None,
+        "end_reason": None,
+    }
+    state_manager.get_daily = AsyncMock(return_value=_make_daily(
+        adhd_mode_active=True,
+        adhd_block_started_at="2026-03-25T09:30:00+01:00",
+        adhd_block_ceiling_at="2026-03-25T10:15:00+01:00",
+        adhd_activations=[open_entry],
+    ))
+    send_fn = AsyncMock()
+    await handler.handle("/normal", send_fn)
+
+    state_manager.update_daily.assert_called_once()
+    kwargs = state_manager.update_daily.call_args.kwargs
+    assert kwargs["adhd_mode_active"] is False
+    assert kwargs["adhd_block_started_at"] is None
+    assert kwargs["adhd_block_ceiling_at"] is None
+    activations = kwargs["adhd_activations"]
+    assert activations[-1]["ended_at"] is not None
+    assert activations[-1]["end_reason"] == "manual"
+    followup_handler.cancel_ceiling.assert_called_once()
+
+
+async def test_handle_adhd_off_no_llm_call(handler, llm_client):
+    state_manager_get_daily_returns_active = _make_daily(adhd_mode_active=True)
+    handler._state.get_daily = AsyncMock(return_value=state_manager_get_daily_returns_active)
+    await handler.handle("/normal", AsyncMock())
+    llm_client.send.assert_not_called()
+
+
+async def test_handle_adhd_off_when_not_active(handler, state_manager, followup_handler):
+    """`/normal` while ADHD already off sends a no-op message and does nothing."""
+    send_fn = AsyncMock()
+    await handler.handle("/normal", send_fn)
+    state_manager.update_daily.assert_not_called()
+    followup_handler.cancel_ceiling.assert_not_called()
+    msg = send_fn.call_args[0][0]
+    assert "Not in ADHD mode" in msg
+
+
+# ── _handle_ceiling ───────────────────────────────────────────────────────────
+
+async def test_handle_ceiling_schedules_with_minutes(handler, followup_handler):
+    """`ceiling: 25` schedules a 25-min ceiling."""
+    await handler.handle("ceiling: 25", AsyncMock())
+    followup_handler.schedule_ceiling.assert_awaited_once()
+    args, kwargs = followup_handler.schedule_ceiling.call_args
+    assert args[0] == 25
+    assert kwargs.get("task", "") == ""
+
+
+async def test_handle_ceiling_with_task(handler, followup_handler):
+    """`ceiling: 25 min for the report` parses minutes AND task."""
+    await handler.handle("ceiling: 25 min for the report", AsyncMock())
+    followup_handler.schedule_ceiling.assert_awaited_once()
+    args, kwargs = followup_handler.schedule_ceiling.call_args
+    assert args[0] == 25
+    assert "report" in kwargs["task"].lower()
+
+
+async def test_handle_ceiling_confirmation_message(handler):
+    send_fn = AsyncMock()
+    await handler.handle("ceiling: 30", send_fn)
+    msg = send_fn.call_args[0][0]
+    assert "30" in msg
+    assert "no extensions" in msg.lower()
+
+
+# ── STUCK auto-activation ─────────────────────────────────────────────────────
+
+async def test_handle_stuck_auto_activates_adhd(handler, state_manager, followup_handler):
+    """Stuck with ADHD off → triggers _activate_adhd("stuck") → schedules ceiling."""
+    # Default _make_daily has adhd_mode_active=False
+    await handler.handle("I'm stuck", AsyncMock())
+    followup_handler.schedule_ceiling.assert_awaited_once_with(45)
+    # An activation entry with trigger="stuck" was written
+    activation_calls = [
+        c for c in state_manager.update_daily.call_args_list
+        if "adhd_activations" in c.kwargs
+    ]
+    assert activation_calls
+    activations = activation_calls[-1].kwargs["adhd_activations"]
+    assert activations[-1]["trigger"] == "stuck"
+
+
+async def test_handle_stuck_skips_activation_when_already_active(handler, state_manager, followup_handler):
+    """Stuck while ADHD already on must NOT re-activate."""
+    state_manager.get_daily = AsyncMock(return_value=_make_daily(adhd_mode_active=True))
+    await handler.handle("I'm stuck", AsyncMock())
+    followup_handler.schedule_ceiling.assert_not_called()
+    # No new activation entry written
+    activation_calls = [
+        c for c in state_manager.update_daily.call_args_list
+        if "adhd_activations" in c.kwargs
+    ]
+    assert not activation_calls
+
+
+# ── Post-ceiling extension guard ──────────────────────────────────────────────
+
+async def test_handle_commit_refuses_after_ceiling_fired(handler, state_manager, followup_handler):
+    """After the ADHD ceiling has fired, `I need 30 min` is refused."""
+    # Ceiling fired at 09:30 (30 min before clock's 10:00)
+    state_manager.get_daily = AsyncMock(return_value=_make_daily(
+        adhd_mode_active=True,
+        adhd_block_started_at="2026-03-25T08:45:00+01:00",
+        adhd_block_ceiling_at="2026-03-25T09:30:00+01:00",
+    ))
+    send_fn = AsyncMock()
+    with patch.object(followup_handler, "schedule", new=AsyncMock()) as mock_schedule:
+        await handler.handle("I need 30 minutes to finish", send_fn)
+    mock_schedule.assert_not_called()
+    msg = send_fn.call_args[0][0]
+    assert "ceiling" in msg.lower()
+    assert "close the laptop" in msg.lower()
+
+
+async def test_handle_commit_allowed_when_ceiling_not_fired(handler, state_manager, followup_handler):
+    """ADHD active but ceiling still in the future → commit goes through normally."""
+    state_manager.get_daily = AsyncMock(return_value=_make_daily(
+        adhd_mode_active=True,
+        adhd_block_started_at="2026-03-25T09:30:00+01:00",
+        adhd_block_ceiling_at="2026-03-25T10:15:00+01:00",  # future relative to 10:00 clock
+    ))
+    with patch.object(followup_handler, "schedule", new=AsyncMock()) as mock_schedule:
+        await handler.handle("I need 10 minutes", AsyncMock())
+    mock_schedule.assert_called_once()
+
+
+# ── Late-night ADHD override ──────────────────────────────────────────────────
+
+async def test_late_night_adhd_redirects_general_to_sleep(handler, state_manager, llm_client, clock):
+    """ADHD on + clock past end_of_day_review → free-form message gets sleep redirect, no LLM."""
+    clock.now.return_value = datetime(2026, 3, 25, 23, 14, tzinfo=ZoneInfo("Europe/Berlin"))
+    state_manager.get_daily = AsyncMock(return_value=_make_daily(adhd_mode_active=True))
+    send_fn = AsyncMock()
+    await handler.handle("what should I work on?", send_fn)
+    llm_client.send.assert_not_called()
+    msg = send_fn.call_args[0][0]
+    assert "sleep" in msg.lower()
+    assert "23:14" in msg
+
+
+async def test_late_night_override_off_when_adhd_inactive(handler, state_manager, llm_client, clock):
+    """Same late-night clock but ADHD off → normal LLM path."""
+    clock.now.return_value = datetime(2026, 3, 25, 23, 14, tzinfo=ZoneInfo("Europe/Berlin"))
+    # _make_daily default has adhd_mode_active=False
+    await handler.handle("what should I work on?", AsyncMock())
+    llm_client.send.assert_called_once()
+
+
+async def test_late_night_done_task_still_routes(handler_with_joplin, joplin, state_manager, llm_client, clock):
+    """`done: X` at 23:14 must still reach Joplin mark_done — DONE_TASK route bypasses the late-night override."""
+    clock.now.return_value = datetime(2026, 3, 25, 23, 14, tzinfo=ZoneInfo("Europe/Berlin"))
+    state_manager.get_daily = AsyncMock(return_value=_make_daily(adhd_mode_active=True))
+    task = _make_task(id="t1", title="Send invoice")
+    joplin.get_tasks = AsyncMock(return_value=[task])
+    llm_client.send = AsyncMock(return_value="t1")
+    await handler_with_joplin.handle("done: send invoice", AsyncMock())
+    joplin.mark_done.assert_called_once_with(task)
