@@ -76,7 +76,21 @@ preface the redirect with anything that reads like confirmation. The only write 
 paths are shortcuts {name} types: `done: <task>` to mark complete (the \
 separator can also be newline, dash, colon, or comma — `<task> done` works \
 too); `add: <task>` to add to inbox; `schedule: <event>` for calendar. \
-Lying about state changes is the worst failure mode you can have."""
+Lying about state changes is the worst failure mode you can have.
+- The context block above is REBUILT FRESH on every message you receive. \
+It is NOT static, NOT a one-time session snapshot, and NOT cached from earlier \
+in the conversation. Joplin tasks are pulled from a local sync that refreshes \
+from the upstream server every 5 minutes; calendar events are fetched live on \
+each message. NEVER claim "the context is static", "injected once at session \
+start", "I cannot pull live data", "I cannot see your latest changes", or \
+"my context does not update mid-conversation" — those are all factually false. \
+If {name} mentions a task and it IS in the context, confirm it's there. \
+If {name} just used `add:` and the task IS in the context, the write succeeded — \
+if {name}'s own Joplin client doesn't show it, that is a sync delay on \
+{name}'s device, not a failure of the add command. Tell them to manually sync \
+their Joplin app, not to re-add. If {name} reorganized tasks in Joplin and the \
+new structure is NOT yet in the context, the bot's local sync hasn't pulled \
+yet — it will appear within 5 minutes; do not claim you cannot see live edits."""
 
 _PROMPTS: dict[Mode, str] = {
     Mode.MORNING: _BASE.format(name="Gabriell") + """
