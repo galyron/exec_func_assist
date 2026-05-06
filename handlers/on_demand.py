@@ -47,6 +47,20 @@ class Intent(str, Enum):
     GENERAL = "general"
 
 
+# Natural-language "<task> done" patterns. Examples:
+#   "Make photo of X - done, take it off the list"
+#   "Miriam must talk to the insurance\ndone"
+#   "buy milk, done"
+# Requires a clear separator (newline / dash-with-spaces / comma-with-space)
+# so we don't catch "I'm done with X" mid-sentence (handled by FINISHED).
+_DONE_TRAILING_RE = re.compile(
+    r'^(.+?)'                         # task text (lazy)
+    r'(?:\n+\s*|\s+[-–—]\s+|,\s+)'   # separator
+    r'done\b',                        # word "done"
+    re.IGNORECASE | re.DOTALL,
+)
+
+
 _TRIGGER_ALIASES: dict[str, str] = {
     "morning":      "morning",
     "retry":        "retry",
@@ -148,6 +162,12 @@ def detect_intent(text: str) -> Intent:
         or re.match(r'\d+\s*min(?:utes?|s)?\b', lower)
     ):
         return Intent.COMMIT
+
+    # Natural-language "<task> done" — task text followed by separator + "done".
+    # Must come before FINISHED so "X\ndone" routes to write-back, not to the
+    # bare-done auto-complete path.
+    if _DONE_TRAILING_RE.match(text.strip()):
+        return Intent.DONE_TASK
 
     # FINISHED / STUCK: only at the start of the message, not mid-sentence.
     if re.match(r"(i'?m\s+|i\s+)?(done|finished|completed|done with)\b", lower):
@@ -402,9 +422,19 @@ class OnDemandHandler(BaseHandler):
         await self._log_bot(msg)
 
     async def _handle_done_task(self, text: str, send_fn: SendFn) -> None:
-        """Match `done: <text>` or `done <text>` to a Joplin task and mark it complete."""
-        match = re.match(r"done\s*:?\s*(.+)", text.strip(), re.IGNORECASE)
-        task_text = match.group(1).strip() if match else ""
+        """Match a Joplin task and mark it complete.
+
+        Accepts both forms:
+          - `done: <task>` (explicit prefix)
+          - `<task> done [trailing]` (natural language: dash, newline, or comma separator)
+        """
+        stripped = text.strip()
+        match = re.match(r"done\s*:\s*(.+)", stripped, re.IGNORECASE | re.DOTALL)
+        if match:
+            task_text = match.group(1).strip()
+        else:
+            match = _DONE_TRAILING_RE.match(stripped)
+            task_text = match.group(1).strip() if match else ""
 
         if not task_text:
             await send_fn("Usage: `done: <task description>`")

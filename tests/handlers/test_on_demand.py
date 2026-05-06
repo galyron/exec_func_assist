@@ -381,6 +381,59 @@ def test_intent_done_i_finished_is_finished():
     assert detect_intent("I finished the report") == Intent.FINISHED
 
 
+# ── DONE_TASK: natural-language "<task> done" patterns ────────────────────────
+
+def test_intent_task_done_dash_separator():
+    msg = "Make photo of Btcino central unit - done, take it off the list"
+    assert detect_intent(msg) == Intent.DONE_TASK
+
+def test_intent_task_done_newline_separator():
+    msg = "Miriam must talk to the insurance people for the house\ndone"
+    assert detect_intent(msg) == Intent.DONE_TASK
+
+def test_intent_task_done_comma_separator():
+    assert detect_intent("buy milk, done") == Intent.DONE_TASK
+
+def test_intent_task_done_em_dash():
+    assert detect_intent("send invoice — done") == Intent.DONE_TASK
+
+def test_intent_bare_done_still_finished():
+    # Auto-completes last suggested task — must NOT route to DONE_TASK extractor.
+    assert detect_intent("done") == Intent.FINISHED
+
+def test_intent_im_done_still_finished():
+    assert detect_intent("I'm done with the report") == Intent.FINISHED
+
+def test_intent_explicit_done_colon_wins_over_trailing():
+    assert detect_intent("done: fix login bug") == Intent.DONE_TASK
+
+
+# ── _handle_done_task with trailing "done" form ───────────────────────────────
+
+async def test_handle_done_task_extracts_from_dash_form(handler_with_joplin, joplin, llm_client):
+    task = _make_task(id="t1", title="Make photo of Btcino central unit")
+    joplin.get_tasks = AsyncMock(return_value=[task])
+    llm_client.send = AsyncMock(return_value="t1")
+    send_fn = AsyncMock()
+    await handler_with_joplin.handle(
+        "Make photo of Btcino central unit - done, take it off the list",
+        send_fn,
+    )
+    joplin.mark_done.assert_called_once_with(task)
+
+
+async def test_handle_done_task_extracts_from_newline_form(handler_with_joplin, joplin, llm_client):
+    task = _make_task(id="t1", title="Miriam must talk to insurance")
+    joplin.get_tasks = AsyncMock(return_value=[task])
+    llm_client.send = AsyncMock(return_value="t1")
+    send_fn = AsyncMock()
+    await handler_with_joplin.handle(
+        "Miriam must talk to the insurance people for the house\ndone",
+        send_fn,
+    )
+    joplin.mark_done.assert_called_once_with(task)
+
+
 # ── done: <task> handler ──────────────────────────────────────────────────────
 
 def _make_task(id="t1", title="Fix bug"):
