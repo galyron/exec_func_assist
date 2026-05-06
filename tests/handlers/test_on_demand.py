@@ -407,6 +407,27 @@ def test_intent_im_done_still_finished():
 def test_intent_explicit_done_colon_wins_over_trailing():
     assert detect_intent("done: fix login bug") == Intent.DONE_TASK
 
+def test_intent_explicit_done_no_space_after_colon():
+    assert detect_intent("done:fix login bug") == Intent.DONE_TASK
+
+def test_intent_task_colon_done():
+    assert detect_intent("Write to Friedemann: done") == Intent.DONE_TASK
+
+def test_intent_task_colon_done_no_spaces():
+    assert detect_intent("Write to Friedemann:done") == Intent.DONE_TASK
+
+def test_intent_task_dash_done_no_spaces():
+    assert detect_intent("Set up email-done") == Intent.DONE_TASK
+
+def test_intent_task_dash_done_asymmetric_spaces():
+    assert detect_intent("Set up email -done") == Intent.DONE_TASK
+    assert detect_intent("Set up email- done") == Intent.DONE_TASK
+
+def test_intent_task_done_plain_space_falls_through():
+    # No punctuation separator → routes to LLM, not DONE_TASK.
+    # (Strict by design — avoids "I have one task done" false-positives.)
+    assert detect_intent("friedemann email done") == Intent.GENERAL
+
 
 # ── _handle_done_task with trailing "done" form ───────────────────────────────
 

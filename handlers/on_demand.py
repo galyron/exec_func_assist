@@ -51,11 +51,14 @@ class Intent(str, Enum):
 #   "Make photo of X - done, take it off the list"
 #   "Miriam must talk to the insurance\ndone"
 #   "buy milk, done"
-# Requires a clear separator (newline / dash-with-spaces / comma-with-space)
-# so we don't catch "I'm done with X" mid-sentence (handled by FINISHED).
+#   "Write to Friedemann: done"
+#   "Set up email-done"
+# Requires a clear punctuation separator (newline / dash / colon / comma) with
+# any amount of optional whitespace around it, so we don't catch "I'm done with X"
+# mid-sentence (which has only spaces and is handled by FINISHED).
 _DONE_TRAILING_RE = re.compile(
     r'^(.+?)'                         # task text (lazy)
-    r'(?:\n+\s*|\s+[-–—]\s+|,\s+)'   # separator
+    r'(?:\n+\s*|\s*[-–—:,]\s*)'      # separator: newline / dash / colon / comma
     r'done\b',                        # word "done"
     re.IGNORECASE | re.DOTALL,
 )
