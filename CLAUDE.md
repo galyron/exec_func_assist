@@ -8,10 +8,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **exec_func_assist** (EVA) is a Discord-based executive function assistant bot backed by the Claude API. It sends proactive structured check-ins, task suggestions, and energy-aware nudges throughout the day. The full spec is in `exec_function_assistant_spec_v0.3.md`. Architecture decisions are in `DECISIONS.md`. The phased build plan is in `PLAN.md`.
 
-**Implementation status:** Phases 1 and 2-B are complete. The bot is fully operational: connectors (including Joplin write-back and Calendar event creation), context assembler, LLM client (single-turn), all scheduled handlers (C8–C11, C14), on-demand routing (C12), follow-up scheduling (C13), commitment timers, timed reminders (C15), and periodic nudges (C14-N) are all working.
+**Implementation status:** Phases 1 and 2-B are code-complete: connectors (including Joplin write-back and Calendar event creation), context assembler, LLM client (single-turn), all scheduled handlers (C8–C11, C14), on-demand routing (C12), follow-up scheduling (C13), commitment timers, timed reminders (C15), and periodic nudges (C14-N) are all implemented.
+
+**⛔ PRODUCTION IS DELIBERATELY SHUT DOWN (2026-07-30). Do not restart it without fixing issue #1 first.**
+
+`eva-bot-prod` on mbox is stopped and its restart policy set to `no`, so reboots will not revive it. It was turned off because the Google Calendar OAuth refresh token has been dead since 2026-05-13 (`invalid_grant`), which broke every calendar-dependent behaviour while the bot kept spending Anthropic budget on hourly scheduled jobs. `eva-joplin-prod` was left running (no API cost).
+
+Re-enabling requires the owner-only browser OAuth flow (`python setup_calendar.py` on the MacBook), copying the refreshed `secrets/google_token.json` to mbox, verifying with `docker compose run --rm bot python -m connectors.calendar`, and only then `./deploy.sh`. Running `deploy.sh` restores `restart: always` on its own.
 
 **Remaining gaps:**
-- C17 (Cost Tracker): spend tracking and cap enforcement are in `llm/client.py`, but Discord warning messages at 80% and 100% cap are not yet sent.
+- **Issue #1:** Calendar OAuth token invalid, the reason production is off.
+- **Issue #2:** No operator alert when a connector degrades; that is why #1 went unnoticed for 2.5 months.
+- C17 (Cost Tracker): spend tracking and cap enforcement are in `llm/client.py`, but Discord warning messages at 80% and 100% cap are not yet sent. Related to #2, both are the same missing "EVA tells its operator something is wrong" capability.
 - Debug mode enhancements planned (print LLM payloads, suppress @mentions) are not implemented.
 
 ---
